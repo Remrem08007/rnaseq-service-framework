@@ -22,9 +22,16 @@ class WorkflowSpec:
 
 
 @dataclass(frozen=True)
+class RuntimeSpec:
+    nextflow_version: str
+    nf_core_tools_version: str
+
+
+@dataclass(frozen=True)
 class WorkflowLock:
     rnaseq: WorkflowSpec
     differential: WorkflowSpec
+    runtime: RuntimeSpec
     last_reviewed: str
 
 
@@ -59,9 +66,16 @@ def load_workflow_lock(path: Path) -> WorkflowLock:
         raise WorkflowLockError(f"{path}: could not read workflow lock: {exc}") from exc
 
     workflows = payload.get("workflows")
+    runtime = payload.get("runtime")
     policy = payload.get("policy")
-    if not isinstance(workflows, dict) or not isinstance(policy, dict):
-        raise WorkflowLockError(f"{path}: [workflows] and [policy] tables are required")
+    if (
+        not isinstance(workflows, dict)
+        or not isinstance(runtime, dict)
+        or not isinstance(policy, dict)
+    ):
+        raise WorkflowLockError(
+            f"{path}: [workflows], [runtime], and [policy] tables are required"
+        )
     if policy.get("versions_are_pinned") is not True:
         raise WorkflowLockError(f"{path}: policy.versions_are_pinned must be true")
     if policy.get("allow_development_revisions") is not False:
@@ -79,8 +93,22 @@ def load_workflow_lock(path: Path) -> WorkflowLock:
         _require_string(workflows, "differential_revision", path),
         path,
     )
+    nextflow_version = _require_string(runtime, "nextflow_version", path)
+    nf_core_tools_version = _require_string(runtime, "nf_core_tools_version", path)
+    for label, version in (
+        ("nextflow_version", nextflow_version),
+        ("nf_core_tools_version", nf_core_tools_version),
+    ):
+        if not EXACT_REVISION.fullmatch(version):
+            raise WorkflowLockError(
+                f"{path}: runtime {label} {version!r} is not an exact semantic version"
+            )
     return WorkflowLock(
         rnaseq=rnaseq,
         differential=differential,
+        runtime=RuntimeSpec(
+            nextflow_version=nextflow_version,
+            nf_core_tools_version=nf_core_tools_version,
+        ),
         last_reviewed=_require_string(policy, "last_reviewed", path),
     )

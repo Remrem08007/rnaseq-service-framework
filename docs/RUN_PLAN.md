@@ -19,7 +19,7 @@ rnaseq-service-plan \
   --output private/plans/study-001.json \
   --outdir results/study-001 \
   --workdir work/study-001 \
-  --network-mode offline \
+  --network-mode direct \
   --container-engine apptainer \
   --executor local
 ```
@@ -57,7 +57,10 @@ The rendered preview is informational and shell-quoted with `shlex.join`.
 
 ## Proxy and offline status
 
-M1 records only whether standard proxy environment-variable names were present;
-their values are never serialized. A plan may request offline mode, but
-`offline_bundle_verified` remains false until M2 verifies a complete staged
-bundle. Therefore a plan alone is not permission to execute offline.
+Only standard proxy environment-variable names are recorded; their values are
+never serialized. M2 now requires `--offline-manifest` whenever
+`--network-mode offline` is selected. Planning verifies every bundled artifact,
+switches the command from the remote workflow name to the verified local
+workflow directory, and records `NXF_OFFLINE=true`. See
+[`OFFLINE_STAGING.md`](OFFLINE_STAGING.md) for the complete staging and
+verification sequence.
