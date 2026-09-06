@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from rnaseq_service.plan import create_rnaseq_plan
-from rnaseq_service.primary import PrimaryDeliveryError, create_primary_receipt
+from rnaseq_service.primary import (
+    PrimaryDeliveryError,
+    create_primary_receipt,
+    diagnose_primary_run,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -178,3 +182,31 @@ def test_changed_control_file_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(PrimaryDeliveryError, match="size changed after planning"):
         create_primary_receipt(run_plan=plan, output=tmp_path / "receipt.json")
+
+
+def test_diagnostics_classify_logs_without_recording_contents(tmp_path: Path) -> None:
+    plan, run_root = completed_fixture(tmp_path)
+    trace = run_root / "execution" / "trace.tsv"
+    trace.write_text(
+        trace.read_text(encoding="utf-8").replace("COMPLETED", "FAILED"),
+        encoding="utf-8",
+    )
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        "registry https://person:secret@example.invalid/image\n"
+        "Process STAR terminated: Out of memory\n",
+        encoding="utf-8",
+    )
+    progress: list[tuple[str, int, bool]] = []
+
+    result = diagnose_primary_run(
+        run_plan=plan,
+        nextflow_log=log,
+        progress=lambda source, line, done: progress.append((source, line, done)),
+    )
+
+    assert result["status"] == "failed_or_incomplete"
+    assert result["findings"]["out_of_memory"]["match_count"] == 1
+    assert result["raw_log_content_recorded"] is False
+    assert "person:secret" not in json.dumps(result)
+    assert progress[-1][2] is True

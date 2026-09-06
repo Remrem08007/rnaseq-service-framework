@@ -11,6 +11,7 @@ import pytest
 from rnaseq_service.hpc_config import write_nextflow_config
 from rnaseq_service.hpc_run import HPCRunError, prepare_launcher, query_job, submit_launcher
 from rnaseq_service.plan import create_rnaseq_plan
+from rnaseq_service.primary import PrimaryDeliveryError, prepare_safe_restart
 
 
 ROOT = Path(__file__).parents[1]
@@ -193,3 +194,73 @@ def test_status_falls_back_to_sacct_for_completed_job(
     assert result["source"] == "sacct"
     assert result["terminal"] is True
     assert result["successful"] is True
+
+
+def restart_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    plan, settings = make_run_plan(tmp_path)
+    payload = json.loads(plan.read_text(encoding="utf-8"))
+    Path(payload["execution"]["workdir"]).mkdir(parents=True)
+    launcher = tmp_path / "launch-1" / "controller.sbatch"
+    launch = prepare_launcher(run_plan=plan, settings_path=settings, output=launcher)
+    receipt = tmp_path / "launch-1" / "submission.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "submitted",
+                "job_id": "123456",
+                "launcher": str(launcher.resolve()),
+                "launcher_sha256": launch["launcher_sha256"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return plan, settings, receipt
+
+
+def test_safe_restart_requires_terminal_failure_and_reuses_workdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, settings, receipt = restart_fixture(tmp_path)
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(
+            argv, 0, "123456|OUT_OF_MEMORY|01:00:00|02:00:00|8G|0:9\n", ""
+        )
+
+    monkeypatch.setattr("rnaseq_service.hpc_run.subprocess.run", fake_run)
+    output = tmp_path / "launch-2" / "controller.sbatch"
+
+    result = prepare_safe_restart(
+        run_plan=plan,
+        settings_path=settings,
+        previous_receipt=receipt,
+        output=output,
+    )
+
+    assert result["restart_prepared"] is True
+    assert result["previous_scheduler_state"] == "OUT_OF_MEMORY"
+    assert result["submitted"] is False
+    assert "-resume" in output.read_text(encoding="utf-8")
+
+
+def test_safe_restart_refuses_active_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, settings, receipt = restart_fixture(tmp_path)
+    monkeypatch.setattr(
+        "rnaseq_service.hpc_run.subprocess.run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, "RUNNING|00:05|12:00:00|node01\n", ""
+        ),
+    )
+
+    with pytest.raises(PrimaryDeliveryError, match="not terminal"):
+        prepare_safe_restart(
+            run_plan=plan,
+            settings_path=settings,
+            previous_receipt=receipt,
+            output=tmp_path / "launch-2" / "controller.sbatch",
+        )

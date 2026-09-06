@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -14,6 +15,7 @@ from .resources import ResourceSummaryError, measure_storage, summarize_trace
 
 
 HashProgress = Callable[[str, int, int], None]
+LogProgress = Callable[[str, int, bool], None]
 
 
 class PrimaryDeliveryError(ValueError):
@@ -259,3 +261,219 @@ def create_primary_receipt(
         output.unlink(missing_ok=True)
         raise
     return payload
+
+
+DIAGNOSTIC_PATTERNS = {
+    "out_of_memory": re.compile(r"out.of.memory|oom.kill|killed process|exceeded.*memory", re.I),
+    "time_limit": re.compile(r"time.?limit|\btimeout\b", re.I),
+    "storage": re.compile(r"no space left|disk quota|quota exceeded", re.I),
+    "network_or_registry": re.compile(
+        r"unknownhost|connection (?:timed out|refused)|ssl(?:error|exception)|registry.*error",
+        re.I,
+    ),
+    "missing_or_denied_input": re.compile(
+        r"no such file|file not found|permission denied", re.I
+    ),
+    "process_failure": re.compile(r"error\s*~|process .+ terminated|exit status", re.I),
+}
+
+DIAGNOSTIC_RECOMMENDATIONS = {
+    "out_of_memory": "Review the failed process trace and approved task memory ceiling before retrying.",
+    "time_limit": "Review the failed process duration and approved task time ceiling before retrying.",
+    "storage": "Confirm quota and free space for the work and results roots before retrying.",
+    "network_or_registry": "Verify the selected direct, proxy, or offline staging mode before retrying.",
+    "missing_or_denied_input": "Restore the planned file/path permissions; do not replace a hashed control file.",
+    "process_failure": "Inspect the named process work directory and tool log before retrying.",
+}
+
+
+def _read_submission_receipt(path: Path) -> tuple[Path, dict[str, object]]:
+    try:
+        resolved = path.resolve(strict=True)
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PrimaryDeliveryError(f"could not read submission receipt: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise PrimaryDeliveryError("unsupported submission receipt schema")
+    return resolved, payload
+
+
+def _diagnostic_sources(
+    *,
+    submission_receipt: Path | None,
+    nextflow_log: Path | None,
+) -> list[Path]:
+    candidates: list[Path] = []
+    if nextflow_log is not None:
+        candidates.append(nextflow_log.resolve(strict=True))
+    if submission_receipt is not None:
+        _, receipt = _read_submission_receipt(submission_receipt)
+        launcher_value = receipt.get("launcher")
+        if not isinstance(launcher_value, str):
+            raise PrimaryDeliveryError("submission receipt has no launcher path")
+        launch_dir = Path(launcher_value).resolve().parent
+        candidates.append(launch_dir / ".nextflow.log")
+        candidates.extend(sorted((launch_dir / "logs").glob("controller-*.err")))
+        candidates.extend(sorted((launch_dir / "logs").glob("controller-*.out")))
+    unique: dict[str, Path] = {}
+    for candidate in candidates:
+        if candidate.is_file():
+            unique[str(candidate.resolve())] = candidate.resolve()
+    return list(unique.values())
+
+
+def diagnose_primary_run(
+    *,
+    run_plan: Path,
+    submission_receipt: Path | None = None,
+    nextflow_log: Path | None = None,
+    progress: LogProgress | None = None,
+) -> dict[str, object]:
+    """Classify an incomplete run without serializing raw log content."""
+
+    plan_path, plan = _read_verified_plan(run_plan)
+    execution = plan["execution"]
+    run_root = Path(str(execution["outdir"])).resolve()
+    trace = run_root / "execution" / "trace.tsv"
+    trace_summary: dict[str, object] | None = None
+    trace_error: str | None = None
+    if trace.is_file():
+        try:
+            trace_summary = summarize_trace(trace)
+        except ResourceSummaryError as exc:
+            trace_error = str(exc)
+
+    findings: dict[str, dict[str, object]] = {}
+    sources = _diagnostic_sources(
+        submission_receipt=submission_receipt,
+        nextflow_log=nextflow_log,
+    )
+    for source in sources:
+        counts = {category: 0 for category in DIAGNOSTIC_PATTERNS}
+        line_numbers: dict[str, list[int]] = {category: [] for category in DIAGNOSTIC_PATTERNS}
+        try:
+            with source.open("r", encoding="utf-8", errors="replace") as handle:
+                final_line = 0
+                for final_line, line in enumerate(handle, start=1):
+                    for category, pattern in DIAGNOSTIC_PATTERNS.items():
+                        if pattern.search(line):
+                            counts[category] += 1
+                            if len(line_numbers[category]) < 20:
+                                line_numbers[category].append(final_line)
+                    if progress is not None:
+                        progress(source.name, final_line, False)
+                if progress is not None:
+                    progress(source.name, final_line, True)
+        except OSError as exc:
+            raise PrimaryDeliveryError(f"could not scan diagnostic log {source}: {exc}") from exc
+        for category, count in counts.items():
+            if count:
+                record = findings.setdefault(
+                    category,
+                    {
+                        "match_count": 0,
+                        "locations": [],
+                        "recommendation": DIAGNOSTIC_RECOMMENDATIONS[category],
+                    },
+                )
+                record["match_count"] += count
+                record["locations"].append(
+                    {"path": str(source), "line_numbers": line_numbers[category]}
+                )
+
+    if trace_summary is None:
+        status = "incomplete_no_valid_trace"
+    elif trace_summary["all_tasks_successful"]:
+        status = "pipeline_trace_complete_run_completion_not_yet_sealed"
+    else:
+        status = "failed_or_incomplete"
+    return {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "run_plan": {"path": str(plan_path), "sha256": sha256_file(plan_path)},
+        "trace": str(trace) if trace.exists() else None,
+        "trace_summary": trace_summary,
+        "trace_error": trace_error,
+        "log_sources": [str(source) for source in sources],
+        "findings": findings,
+        "raw_log_content_recorded": False,
+        "contains_client_results": True,
+        "contains_secrets": False,
+    }
+
+
+def prepare_safe_restart(
+    *,
+    run_plan: Path,
+    settings_path: Path,
+    previous_receipt: Path,
+    output: Path,
+) -> dict[str, object]:
+    """Prepare, but never submit, a new launcher for a safely resumable failed run."""
+
+    from .hpc_run import HPCRunError, prepare_launcher, query_job
+
+    _, plan = _read_verified_plan(run_plan)
+    execution = plan["execution"]
+    if execution.get("executor") != "slurm":
+        raise PrimaryDeliveryError("safe restart currently requires a SLURM run plan")
+    receipt_path, receipt = _read_submission_receipt(previous_receipt)
+    launcher_value = receipt.get("launcher")
+    launcher_hash = receipt.get("launcher_sha256")
+    if not isinstance(launcher_value, str) or not isinstance(launcher_hash, str):
+        raise PrimaryDeliveryError("previous receipt has no launcher identity")
+    try:
+        launcher = Path(launcher_value).resolve(strict=True)
+    except OSError as exc:
+        raise PrimaryDeliveryError("previous launcher is unavailable") from exc
+    if sha256_file(launcher) != launcher_hash:
+        raise PrimaryDeliveryError("previous launcher checksum has changed")
+
+    receipt_status = receipt.get("status")
+    scheduler: dict[str, object] | None
+    if receipt_status == "submitted":
+        try:
+            scheduler = query_job(receipt_path)
+        except HPCRunError as exc:
+            raise PrimaryDeliveryError(str(exc)) from exc
+        if not scheduler.get("terminal"):
+            raise PrimaryDeliveryError("previous scheduler job is not terminal")
+        if scheduler.get("successful"):
+            raise PrimaryDeliveryError("previous scheduler job completed successfully; do not restart it")
+    elif receipt_status == "submission_failed":
+        scheduler = None
+    else:
+        raise PrimaryDeliveryError(f"previous receipt status is not restartable: {receipt_status!r}")
+
+    try:
+        workdir = Path(str(execution["workdir"])).resolve(strict=True)
+    except OSError as exc:
+        raise PrimaryDeliveryError("planned work directory is unavailable for -resume") from exc
+    if not workdir.is_dir():
+        raise PrimaryDeliveryError("planned work path is not a directory")
+    trace = Path(str(execution["outdir"])).resolve() / "execution" / "trace.tsv"
+    if trace.is_file():
+        try:
+            summary = summarize_trace(trace)
+        except ResourceSummaryError as exc:
+            raise PrimaryDeliveryError(str(exc)) from exc
+        if summary["all_tasks_successful"]:
+            raise PrimaryDeliveryError("Nextflow trace is already complete; do not restart it")
+    try:
+        result = prepare_launcher(
+            run_plan=run_plan,
+            settings_path=settings_path,
+            output=output,
+        )
+    except HPCRunError as exc:
+        raise PrimaryDeliveryError(str(exc)) from exc
+    return {
+        **result,
+        "restart_prepared": True,
+        "restart_of_receipt": str(receipt_path),
+        "restart_of_job_id": receipt.get("job_id"),
+        "previous_scheduler_state": scheduler.get("state") if scheduler else "SUBMISSION_FAILED",
+        "workdir_reused": str(workdir),
+        "submitted": False,
+    }
