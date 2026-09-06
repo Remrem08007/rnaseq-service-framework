@@ -1,6 +1,6 @@
 # RNA-seq Service Framework Roadmap
 
-Status: **M0 implemented; awaiting hosted CI and merge**
+Status: **M0 complete; M1 planned**
 
 ## Goal
 
