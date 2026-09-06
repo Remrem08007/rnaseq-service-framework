@@ -88,6 +88,16 @@ environment variables without storing their values, seals every artifact with
 SHA-256, and refuses offline planning until the bundle verifies. See
 [`docs/OFFLINE_STAGING.md`](docs/OFFLINE_STAGING.md).
 
+## M3 HPC execution
+
+M3 validates private infrastructure settings and renders a generic
+SLURM/Apptainer Nextflow configuration. It prepares an immutable resumable
+controller script, reserves a receipt before submission, reports scheduler
+state through `squeue`/`sacct`, and summarizes task-level Nextflow trace metrics
+plus measured work/results storage with visible progress. Cluster accounts,
+partitions, modules, and filesystem paths remain external. See
+[`docs/HPC_EXECUTION.md`](docs/HPC_EXECUTION.md).
+
 ## Documentation
 
 - [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.md) — supported intake,
@@ -98,6 +108,8 @@ SHA-256, and refuses offline planning until the bundle verifies. See
   safety, and execution boundary;
 - [`docs/OFFLINE_STAGING.md`](docs/OFFLINE_STAGING.md) — pinned downloads,
   proxy handling, progress, bundle sealing, and offline verification;
+- [`docs/HPC_EXECUTION.md`](docs/HPC_EXECUTION.md) — external infrastructure
+  settings, resumable SLURM launches, status, and resource observations;
 - [`ROADMAP.md`](ROADMAP.md) — M0–M8 implementation plan.
 
 ## Data and privacy policy
