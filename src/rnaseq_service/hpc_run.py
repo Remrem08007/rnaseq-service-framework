@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .hpc_config import HPCConfigError, load_hpc_settings, render_nextflow_config
+from .inputs import InputManifestError, verify_input_manifest
 from .plan import sha256_file
 
 
@@ -50,6 +51,15 @@ def _read_plan(path: Path) -> dict[str, object]:
             raise HPCRunError(f"control file size changed after planning: {label}")
         if sha256_file(control_path) != record.get("sha256"):
             raise HPCRunError(f"control file checksum changed after planning: {label}")
+    input_record = controls.get("input_manifest")
+    if input_record is not None:
+        try:
+            verify_input_manifest(
+                Path(str(input_record["path"])),
+                expected_samplesheet=Path(str(controls["samplesheet"]["path"])),
+            )
+        except (InputManifestError, OSError) as exc:
+            raise HPCRunError(f"input manifest verification failed: {exc}") from exc
     return payload
 
 

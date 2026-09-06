@@ -10,6 +10,7 @@ import pytest
 
 from rnaseq_service.hpc_config import write_nextflow_config
 from rnaseq_service.hpc_run import HPCRunError, prepare_launcher, query_job, submit_launcher
+from rnaseq_service.inputs import create_input_manifest
 from rnaseq_service.plan import create_rnaseq_plan
 from rnaseq_service.primary import PrimaryDeliveryError, prepare_safe_restart
 
@@ -83,6 +84,8 @@ def make_run_plan(tmp_path: Path) -> tuple[Path, Path]:
     config = tmp_path / "generated" / "nextflow.config"
     write_nextflow_config(settings, config)
     samplesheet, design, contrasts = create_inputs(tmp_path)
+    input_manifest = tmp_path / "input-manifest.json"
+    create_input_manifest(samplesheet=samplesheet, output=input_manifest)
     plan_path = tmp_path / "plans" / "run.json"
     create_rnaseq_plan(
         samplesheet=samplesheet,
@@ -96,6 +99,7 @@ def make_run_plan(tmp_path: Path) -> tuple[Path, Path]:
         container_engine="apptainer",
         executor="slurm",
         infrastructure_config=config,
+        input_manifest=input_manifest,
     )
     return plan_path, settings
 

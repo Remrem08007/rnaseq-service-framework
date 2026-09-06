@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from rnaseq_service.inputs import create_input_manifest
 from rnaseq_service.plan import create_rnaseq_plan
 from rnaseq_service.primary import (
     PrimaryDeliveryError,
@@ -59,6 +60,8 @@ def completed_fixture(tmp_path: Path) -> tuple[Path, Path]:
         [["treated_vs_control", "condition", "control", "treated"]],
     )
     plan_path = tmp_path / "private" / "run-plan.json"
+    input_manifest = tmp_path / "private" / "input-manifest.json"
+    create_input_manifest(samplesheet=samplesheet, output=input_manifest)
     run_root = tmp_path / "results"
     create_rnaseq_plan(
         samplesheet=samplesheet,
@@ -71,6 +74,7 @@ def completed_fixture(tmp_path: Path) -> tuple[Path, Path]:
         network_mode="direct",
         container_engine="apptainer",
         executor="local",
+        input_manifest=input_manifest,
     )
 
     execution = run_root / "execution"

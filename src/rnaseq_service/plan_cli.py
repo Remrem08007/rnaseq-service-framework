@@ -16,6 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Validate intake and write an immutable nf-core/rnaseq plan.",
     )
     parser.add_argument("--samplesheet", type=Path, required=True)
+    parser.add_argument("--input-manifest", type=Path, required=True)
     parser.add_argument("--design", type=Path, required=True)
     parser.add_argument("--contrasts", type=Path, required=True)
     parser.add_argument(
@@ -70,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
             infrastructure_config=args.infrastructure_config,
             offline_manifest=args.offline_manifest,
             min_replicates=args.min_replicates,
+            input_manifest=args.input_manifest,
         )
     except PreflightPlanError as exc:
         print(exc.report.to_json(), file=sys.stderr, end="")

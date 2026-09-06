@@ -39,7 +39,9 @@ def _read_verified_plan(path: Path) -> tuple[Path, dict[str, object]]:
     if not isinstance(execution, dict) or not isinstance(execution.get("outdir"), str):
         raise PrimaryDeliveryError("run plan execution record is invalid")
     controls = payload.get("control_files")
-    required_controls = {"samplesheet", "design", "contrasts", "workflow_lock"}
+    required_controls = {
+        "samplesheet", "design", "contrasts", "workflow_lock", "input_manifest"
+    }
     if not isinstance(controls, dict) or not required_controls.issubset(controls):
         raise PrimaryDeliveryError("run plan control-file records are incomplete")
     for label, record in controls.items():
