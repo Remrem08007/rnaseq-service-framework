@@ -21,6 +21,7 @@ dev = [
 
 [project.scripts]
 rnaseq-service-preflight = "rnaseq_service.cli:main"
+rnaseq-service-plan = "rnaseq_service.plan_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

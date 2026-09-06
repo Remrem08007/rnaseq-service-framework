@@ -1,0 +1,63 @@
+# Immutable run plan
+
+M1 separates planning from execution. `rnaseq-service-plan` performs the full
+intake preflight, reads the reviewed workflow lock, hashes every control file,
+builds a Nextflow argument vector, and writes an exclusive JSON plan. It does
+not invoke Nextflow, contact a registry, submit a job, or create analysis
+results.
+
+## Create a plan
+
+Real FASTQ files must exist because planning always enables filesystem checks.
+
+```bash
+rnaseq-service-plan \
+  --samplesheet private/intake/samplesheet.csv \
+  --design private/intake/design.csv \
+  --contrasts private/intake/contrasts.csv \
+  --workflow-lock config/workflows.toml \
+  --output private/plans/study-001.json \
+  --outdir results/study-001 \
+  --workdir work/study-001 \
+  --network-mode offline \
+  --container-engine apptainer \
+  --executor local
+```
+
+For SLURM planning, `--executor slurm` requires an explicit
+`--infrastructure-config`. M1 records and hashes that file; the generic SLURM
+templates themselves arrive in M3.
+
+## Plan contents
+
+- exact upstream workflow name and revision;
+- creation time and schema version;
+- SHA-256, size, and resolved path for each control file;
+- complete preflight outcome;
+- executor, container engine, network mode, output directory, and work directory;
+- a structured `command_argv` list;
+- a shell-escaped preview for human review;
+- proxy-variable presence flags, never proxy values;
+- explicit `planned_not_executed` status.
+
+The plan intentionally does not hash large FASTQs in M1. Dataset provenance and
+efficient file identity are added before execution in a later milestone.
+
+## Immutability
+
+The output is created with mode `0600` using exclusive creation. An existing
+plan is never overwritten. A changed design, workflow revision, or execution
+setting requires a new plan path so the earlier decision record remains intact.
+
+## Command safety
+
+The canonical command is stored as an argument vector. The implementation does
+not concatenate user-controlled paths into a command passed to `shell=True`.
+The rendered preview is informational and shell-quoted with `shlex.join`.
+
+## Proxy and offline status
+
+M1 records only whether standard proxy environment-variable names were present;
+their values are never serialized. A plan may request offline mode, but
+`offline_bundle_verified` remains false until M2 verifies a complete staged
+bundle. Therefore a plan alone is not permission to execute offline.

@@ -49,6 +49,27 @@ The sample sheet follows the four-column contract documented by
 contains one row per biological sample, and contrast direction is explicit as
 reference versus target.
 
+## M1 run planning
+
+Once real FASTQs and reviewed intake tables exist, write a non-executing,
+immutable run plan:
+
+```bash
+rnaseq-service-plan \
+  --samplesheet private/intake/samplesheet.csv \
+  --design private/intake/design.csv \
+  --contrasts private/intake/contrasts.csv \
+  --output private/plans/study-001.json \
+  --outdir results/study-001 \
+  --workdir work/study-001 \
+  --network-mode offline
+```
+
+Planning requires all FASTQs to exist, validates the intake, reads the exact
+workflow lock, hashes every control file, and stores the canonical Nextflow
+argument vector. It does not run Nextflow or contact the network. Existing plan
+files are never overwritten. See [`docs/RUN_PLAN.md`](docs/RUN_PLAN.md).
+
 ## Operating modes
 
 - **Direct:** stage pinned workflows, containers, and references through the
@@ -67,6 +88,8 @@ their security and reproducibility requirements first.
   delivery gates, responsibilities, and exclusions;
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — workflow boundary, network
   modes, security, and reproducibility;
+- [`docs/RUN_PLAN.md`](docs/RUN_PLAN.md) — immutable planning, hashes, command
+  safety, and execution boundary;
 - [`ROADMAP.md`](ROADMAP.md) — M0–M8 implementation plan.
 
 ## Data and privacy policy
