@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Client and workflow data
+data/
+work/
+results/
+reports/private/
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.bam
+*.bai
+*.cram
+*.crai
+
+# Runtime state and credentials
+.nextflow/
+.nextflow.log*
+.env
+*.secret
+credentials/
