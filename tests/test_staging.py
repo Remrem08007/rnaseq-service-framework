@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from rnaseq_service.staging import StagingError, _redact, create_staging_plan
+from rnaseq_service.staging import (
+    StagingError,
+    _redact,
+    check_staging_environment,
+    create_staging_plan,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -90,3 +95,35 @@ def test_redaction_removes_every_proxy_value() -> None:
     rendered = _redact(output, ["http://user:pw@proxy.invalid:8080"])
 
     assert rendered == "connecting through <redacted-proxy>\n"
+
+
+def test_environment_check_verifies_versions_and_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    values = kwargs(tmp_path)
+    create_staging_plan(**values)
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("rnaseq_service.staging.shutil.which", lambda *args, **kwargs: "/bin/tool")
+    monkeypatch.setattr(
+        "rnaseq_service.staging.subprocess.check_output",
+        lambda argv, **kwargs: "nf-core 4.1.0" if argv[0] == "nf-core" else "Nextflow 26.04.6",
+    )
+    monkeypatch.setattr(
+        "rnaseq_service.staging.urllib.request.urlopen",
+        lambda request, timeout: Response(),
+    )
+
+    result = check_staging_environment(Path(values["output"]))
+
+    assert result["ready"] is True
+    assert all(check["ok"] for check in result["checks"])
+    assert result["proxy_values_recorded"] is False

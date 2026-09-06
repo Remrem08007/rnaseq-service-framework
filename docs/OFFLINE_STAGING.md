@@ -70,7 +70,21 @@ configuration outside the repository and unset it after staging.
 
 ## 3. Execute staging once
 
-Review `private/staging-plan.json`, then run:
+Review `private/staging-plan.json`, then perform the read-only tool and network
+check:
+
+```bash
+rnaseq-service-stage check \
+  --plan "$PWD/private/staging-plan.json" \
+  --timeout-seconds 10
+```
+
+This verifies the exact nf-core/tools and Nextflow versions, finds Apptainer or
+Singularity, and checks reachability of the GitHub API, Quay, and Docker
+registry. HTTP authentication responses count as reachable; connection and
+proxy failures do not. The JSON report contains no proxy values.
+
+Once `"ready": true`, run:
 
 ```bash
 rnaseq-service-stage run \

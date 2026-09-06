@@ -11,6 +11,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +22,11 @@ from .workflow_lock import WorkflowLockError, WorkflowSpec, load_workflow_lock
 
 
 STAGING_NETWORK_MODES = {"direct", "proxy"}
+STAGING_ENDPOINTS = (
+    ("github_api", "https://api.github.com/"),
+    ("quay_registry", "https://quay.io/v2/"),
+    ("docker_registry", "https://registry-1.docker.io/v2/"),
+)
 
 
 class StagingError(ValueError):
@@ -148,6 +155,122 @@ def _redact(text: str, secrets: list[str]) -> str:
         if value:
             rendered = rendered.replace(value, "<redacted-proxy>")
     return rendered
+
+
+def check_staging_environment(
+    plan_path: Path,
+    *,
+    timeout_seconds: int = 10,
+) -> dict[str, object]:
+    """Check tools, exact versions, proxy presence, and required endpoints."""
+
+    if timeout_seconds < 1:
+        raise StagingError("network timeout must be at least 1 second")
+    resolved_plan = plan_path.resolve(strict=True)
+    try:
+        plan = json.loads(resolved_plan.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StagingError(f"could not read staging plan: {exc}") from exc
+    if not isinstance(plan, dict) or plan.get("schema_version") != 1:
+        raise StagingError("unsupported staging plan schema")
+    network_mode = plan.get("network_mode")
+    if network_mode not in STAGING_NETWORK_MODES:
+        raise StagingError("invalid staging network mode")
+    lock_record = plan.get("workflow_lock")
+    if not isinstance(lock_record, dict):
+        raise StagingError("staging plan has no workflow lock")
+    lock_path = Path(str(lock_record.get("path", ""))).resolve(strict=True)
+    if sha256_file(lock_path) != lock_record.get("sha256"):
+        raise StagingError("workflow lock changed after planning")
+    lock = load_workflow_lock(lock_path)
+
+    proxy_names = [name for name in PROXY_VARIABLES if os.environ.get(name)]
+    secrets = [os.environ[name] for name in proxy_names]
+    checks: list[dict[str, object]] = []
+    if network_mode == "proxy" and not proxy_names:
+        checks.append(
+            {
+                "name": "proxy_environment",
+                "ok": False,
+                "detail": "no standard proxy variable is present",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "proxy_environment",
+                "ok": True,
+                "present_names": proxy_names,
+                "values_recorded": False,
+            }
+        )
+
+    environment = os.environ.copy()
+    expected_versions = {
+        "nf-core": lock.runtime.nf_core_tools_version,
+        "nextflow": lock.runtime.nextflow_version,
+    }
+    version_argv = {"nf-core": ["nf-core", "--version"], "nextflow": ["nextflow", "-version"]}
+    for executable, expected in expected_versions.items():
+        available = shutil.which(executable, path=environment.get("PATH")) is not None
+        detail: dict[str, object] = {
+            "name": f"runtime:{executable}",
+            "ok": False,
+            "expected_version": expected,
+        }
+        if available:
+            try:
+                output = subprocess.check_output(
+                    version_argv[executable],
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    env=environment,
+                )
+                detail["ok"] = re.search(
+                    rf"(?<![0-9.]){re.escape(expected)}(?![0-9.])", output
+                ) is not None
+                if not detail["ok"]:
+                    detail["detail"] = _redact(output.strip(), secrets)
+            except (OSError, subprocess.CalledProcessError) as exc:
+                detail["detail"] = _redact(str(exc), secrets)
+        else:
+            detail["detail"] = "not found on PATH"
+        checks.append(detail)
+
+    container_available = any(
+        shutil.which(name, path=environment.get("PATH"))
+        for name in ("apptainer", "singularity")
+    )
+    checks.append(
+        {
+            "name": "runtime:apptainer_or_singularity",
+            "ok": container_available,
+            "detail": "available" if container_available else "not found on PATH",
+        }
+    )
+
+    for name, url in STAGING_ENDPOINTS:
+        request = urllib.request.Request(url, method="HEAD")
+        check: dict[str, object] = {"name": f"endpoint:{name}", "url": url, "ok": False}
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                check["status"] = response.status
+                check["ok"] = True
+        except urllib.error.HTTPError as exc:
+            # Authentication failures still prove that the registry is reachable.
+            check["status"] = exc.code
+            check["ok"] = True
+        except (urllib.error.URLError, OSError) as exc:
+            check["detail"] = _redact(str(exc), secrets)
+        checks.append(check)
+
+    return {
+        "ready": all(bool(check["ok"]) for check in checks),
+        "network_mode": network_mode,
+        "checks": checks,
+        "proxy_values_recorded": False,
+        "contains_secrets": False,
+    }
 
 
 def _stream_command(
