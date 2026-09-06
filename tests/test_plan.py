@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from rnaseq_service.bundle import seal_bundle
 from rnaseq_service.plan import PlanError, create_rnaseq_plan
 from rnaseq_service.workflow_lock import WorkflowLockError, load_workflow_lock
 
@@ -71,6 +72,31 @@ def plan_kwargs(tmp_path: Path) -> dict[str, object]:
     }
 
 
+def make_offline_manifest(tmp_path: Path) -> Path:
+    root = tmp_path / "offline-bundle"
+    rnaseq = root / "pipelines" / "rnaseq" / "workflow"
+    differential = root / "pipelines" / "differential" / "workflow"
+    containers = root / "containers"
+    plugins = root / "plugins" / "nf-schema-2.5.1"
+    for workflow in (rnaseq, differential):
+        workflow.mkdir(parents=True)
+        (workflow / "main.nf").write_text("nextflow.enable.dsl=2\n", encoding="utf-8")
+        (workflow / "nextflow.config").write_text("plugins {}\n", encoding="utf-8")
+    containers.mkdir(parents=True)
+    (containers / "tool.sif").write_bytes(b"synthetic-container")
+    plugins.mkdir(parents=True)
+    (plugins / "plugin.jar").write_bytes(b"synthetic-plugin")
+    seal_bundle(
+        bundle_dir=root,
+        workflow_lock=ROOT / "config" / "workflows.toml",
+        rnaseq_workflow=rnaseq,
+        differential_workflow=differential,
+        container_root=containers,
+        plugin_root=plugins.parent,
+    )
+    return root / "offline_bundle.manifest.json"
+
+
 def test_repository_workflow_lock_is_exact() -> None:
     lock = load_workflow_lock(ROOT / "config" / "workflows.toml")
 
@@ -78,6 +104,8 @@ def test_repository_workflow_lock_is_exact() -> None:
     assert lock.rnaseq.revision == "3.26.0"
     assert lock.differential.name == "nf-core/differentialabundance"
     assert lock.differential.revision == "2.0.0"
+    assert lock.runtime.nextflow_version == "26.04.6"
+    assert lock.runtime.nf_core_tools_version == "4.1.0"
 
 
 def test_floating_revision_is_rejected(tmp_path: Path) -> None:
@@ -88,6 +116,9 @@ rnaseq_name = "nf-core/rnaseq"
 rnaseq_revision = "latest"
 differential_name = "nf-core/differentialabundance"
 differential_revision = "2.0.0"
+[runtime]
+nextflow_version = "26.04.6"
+nf_core_tools_version = "4.1.0"
 [policy]
 versions_are_pinned = true
 allow_development_revisions = false
@@ -134,6 +165,36 @@ def test_proxy_values_are_never_serialized(tmp_path: Path, monkeypatch: pytest.M
     assert plan["execution"]["proxy_values_recorded"] is False
     assert "person:secret" not in rendered
     assert "example.invalid" not in rendered
+
+
+def test_offline_mode_requires_and_verifies_local_bundle(tmp_path: Path) -> None:
+    kwargs = plan_kwargs(tmp_path)
+    kwargs["network_mode"] = "offline"
+
+    with pytest.raises(PlanError, match="offline-manifest is required"):
+        create_rnaseq_plan(**kwargs)
+
+    manifest = make_offline_manifest(tmp_path)
+    kwargs["offline_manifest"] = manifest
+    plan = create_rnaseq_plan(**kwargs)
+
+    execution = plan["execution"]
+    assert execution["offline_bundle_verified"] is True
+    assert execution["required_environment"]["NXF_OFFLINE"] == "true"
+    assert execution["required_environment"]["NXF_PLUGINS_DIR"].endswith("/plugins")
+    assert "-r" not in plan["command_argv"]
+    assert plan["command_argv"][2].endswith("/pipelines/rnaseq/workflow")
+    assert "offline_manifest" in plan["control_files"]
+
+
+def test_offline_mode_rejects_modified_bundle(tmp_path: Path) -> None:
+    kwargs = plan_kwargs(tmp_path)
+    manifest = make_offline_manifest(tmp_path)
+    (manifest.parent / "containers" / "tool.sif").write_bytes(b"changed")
+    kwargs.update(network_mode="offline", offline_manifest=manifest)
+
+    with pytest.raises(PlanError, match="offline bundle verification failed"):
+        create_rnaseq_plan(**kwargs)
 
 
 def test_plan_file_is_private_and_never_overwritten(tmp_path: Path) -> None:

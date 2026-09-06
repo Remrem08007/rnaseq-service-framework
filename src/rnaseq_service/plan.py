@@ -10,6 +10,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .bundle import BundleError, verify_bundle
 from .preflight import PreflightReport, run_preflight
 from .workflow_lock import WorkflowLockError, load_workflow_lock
 
@@ -17,7 +18,14 @@ from .workflow_lock import WorkflowLockError, load_workflow_lock
 NETWORK_MODES = {"direct", "proxy", "offline"}
 CONTAINER_ENGINES = {"apptainer", "docker", "singularity"}
 EXECUTORS = {"local", "slurm"}
-PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+PROXY_VARIABLES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
 
 
 class PlanError(ValueError):
@@ -50,7 +58,7 @@ def _control_file(path: Path) -> dict[str, object]:
 def build_rnaseq_argv(
     *,
     workflow_name: str,
-    revision: str,
+    revision: str | None,
     samplesheet: Path,
     outdir: Path,
     workdir: Path,
@@ -63,13 +71,12 @@ def build_rnaseq_argv(
         "nextflow",
         "run",
         workflow_name,
-        "-r",
-        revision,
-        "-profile",
-        container_engine,
-        "-work-dir",
-        str(workdir),
     ]
+    if revision is not None:
+        argv.extend(["-r", revision])
+    argv.extend(
+        ["-profile", container_engine, "-work-dir", str(workdir)]
+    )
     if infrastructure_config is not None:
         argv.extend(["-c", str(infrastructure_config)])
     argv.extend(
@@ -105,6 +112,7 @@ def create_rnaseq_plan(
     container_engine: str,
     executor: str,
     infrastructure_config: Path | None = None,
+    offline_manifest: Path | None = None,
     min_replicates: int = 2,
 ) -> dict[str, object]:
     """Validate inputs and exclusively write a reproducible plan JSON."""
@@ -119,6 +127,12 @@ def create_rnaseq_plan(
         raise PlanError("--infrastructure-config is required for the slurm executor")
     if executor == "local" and infrastructure_config is not None:
         raise PlanError("--infrastructure-config is only accepted with the slurm executor")
+    if network_mode == "offline" and offline_manifest is None:
+        raise PlanError("--offline-manifest is required in offline mode")
+    if network_mode != "offline" and offline_manifest is not None:
+        raise PlanError("--offline-manifest is only accepted in offline mode")
+    if network_mode == "offline" and container_engine == "docker":
+        raise PlanError("offline bundles currently support apptainer/singularity only")
 
     preflight = run_preflight(
         samplesheet,
@@ -135,6 +149,18 @@ def create_rnaseq_plan(
     except WorkflowLockError as exc:
         raise PlanError(str(exc)) from exc
 
+    bundle: dict[str, object] | None = None
+    offline_manifest_resolved: Path | None = None
+    if offline_manifest is not None:
+        try:
+            bundle = verify_bundle(
+                offline_manifest,
+                expected_workflow_lock=workflow_lock,
+            )
+        except (BundleError, OSError) as exc:
+            raise PlanError(f"offline bundle verification failed: {exc}") from exc
+        offline_manifest_resolved = offline_manifest.resolve(strict=True)
+
     samplesheet_resolved = samplesheet.resolve(strict=True)
     outdir_resolved = outdir.resolve()
     workdir_resolved = workdir.resolve()
@@ -143,9 +169,17 @@ def create_rnaseq_plan(
         if infrastructure_config is not None
         else None
     )
+    workflow_source = lock.rnaseq.name
+    workflow_revision: str | None = lock.rnaseq.revision
+    if bundle is not None and offline_manifest_resolved is not None:
+        components = bundle["components"]
+        workflow_source = str(
+            (offline_manifest_resolved.parent / components["rnaseq_workflow"]).resolve()
+        )
+        workflow_revision = None
     argv = build_rnaseq_argv(
-        workflow_name=lock.rnaseq.name,
-        revision=lock.rnaseq.revision,
+        workflow_name=workflow_source,
+        revision=workflow_revision,
         samplesheet=samplesheet_resolved,
         outdir=outdir_resolved,
         workdir=workdir_resolved,
@@ -161,12 +195,32 @@ def create_rnaseq_plan(
     }
     if infra_resolved is not None:
         controls["infrastructure_config"] = _control_file(infra_resolved)
+    if offline_manifest_resolved is not None:
+        controls["offline_manifest"] = _control_file(offline_manifest_resolved)
+
+    required_environment: dict[str, str] = {}
+    if bundle is not None and offline_manifest_resolved is not None:
+        components = bundle["components"]
+        required_environment = {
+            "NXF_OFFLINE": "true",
+            "NXF_SINGULARITY_CACHEDIR": str(
+                (
+                    offline_manifest_resolved.parent / components["container_root"]
+                ).resolve()
+            ),
+            "NXF_PLUGINS_DIR": str(
+                (
+                    offline_manifest_resolved.parent / components["plugin_root"]
+                ).resolve()
+            ),
+        }
 
     plan: dict[str, object] = {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "stage": "planned_not_executed",
         "workflow": asdict(lock.rnaseq),
+        "runtime": asdict(lock.runtime),
         "workflow_lock_last_reviewed": lock.last_reviewed,
         "control_files": controls,
         "preflight": asdict(preflight),
@@ -180,7 +234,9 @@ def create_rnaseq_plan(
                 name for name in PROXY_VARIABLES if os.environ.get(name)
             ],
             "proxy_values_recorded": False,
-            "offline_bundle_verified": False,
+            "offline_bundle_verified": bundle is not None,
+            "offline_bundle": bundle,
+            "required_environment": required_environment,
         },
         "command_argv": argv,
         "command_preview": shlex.join(argv),

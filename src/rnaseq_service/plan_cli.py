@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="local",
     )
     parser.add_argument("--infrastructure-config", type=Path)
+    parser.add_argument(
+        "--offline-manifest",
+        type=Path,
+        help="sealed bundle manifest; required when --network-mode offline",
+    )
     parser.add_argument("--min-replicates", type=int, default=2)
     return parser
 
@@ -63,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             container_engine=args.container_engine,
             executor=args.executor,
             infrastructure_config=args.infrastructure_config,
+            offline_manifest=args.offline_manifest,
             min_replicates=args.min_replicates,
         )
     except PreflightPlanError as exc:

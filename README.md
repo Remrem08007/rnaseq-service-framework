@@ -24,6 +24,9 @@ The current lock records:
 Versions are pinned in [`config/workflows.toml`](config/workflows.toml) and are
 changed only through a reviewed, retested update.
 
+The same lock pins Nextflow 26.04.6 and nf-core/tools 4.1.0 for deterministic
+staging behavior.
+
 ## M0 preflight
 
 The first implementation validates the client intake contract before any
@@ -62,7 +65,7 @@ rnaseq-service-plan \
   --output private/plans/study-001.json \
   --outdir results/study-001 \
   --workdir work/study-001 \
-  --network-mode offline
+  --network-mode direct
 ```
 
 Planning requires all FASTQs to exist, validates the intake, reads the exact
@@ -79,8 +82,11 @@ files are never overwritten. See [`docs/RUN_PLAN.md`](docs/RUN_PLAN.md).
 - **Offline:** verify and use a fully pre-staged, checksum-bound bundle on
   restricted compute nodes.
 
-The staging and execution implementations arrive in later milestones; M0 locks
-their security and reproducibility requirements first.
+M2 implements staging and offline verification. It downloads both workflows
+and their Apptainer images with visible progress, supports standard proxy
+environment variables without storing their values, seals every artifact with
+SHA-256, and refuses offline planning until the bundle verifies. See
+[`docs/OFFLINE_STAGING.md`](docs/OFFLINE_STAGING.md).
 
 ## Documentation
 
@@ -90,6 +96,8 @@ their security and reproducibility requirements first.
   modes, security, and reproducibility;
 - [`docs/RUN_PLAN.md`](docs/RUN_PLAN.md) — immutable planning, hashes, command
   safety, and execution boundary;
+- [`docs/OFFLINE_STAGING.md`](docs/OFFLINE_STAGING.md) — pinned downloads,
+  proxy handling, progress, bundle sealing, and offline verification;
 - [`ROADMAP.md`](ROADMAP.md) — M0–M8 implementation plan.
 
 ## Data and privacy policy
