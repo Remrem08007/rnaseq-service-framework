@@ -25,6 +25,7 @@ rnaseq-service-plan = "rnaseq_service.plan_cli:main"
 rnaseq-service-bundle = "rnaseq_service.bundle_cli:main"
 rnaseq-service-stage = "rnaseq_service.staging_cli:main"
 rnaseq-service-hpc = "rnaseq_service.hpc_cli:main"
+rnaseq-service-primary = "rnaseq_service.primary_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

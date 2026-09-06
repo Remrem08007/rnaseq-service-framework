@@ -82,6 +82,20 @@ def test_missing_required_trace_column_is_rejected(tmp_path: Path) -> None:
         summarize_trace(path)
 
 
+def test_nonterminal_trace_state_is_not_complete(tmp_path: Path) -> None:
+    path = tmp_path / "running.tsv"
+    path.write_text(
+        "name\tstatus\tduration\trealtime\t%cpu\tpeak_rss\n"
+        "STAR (sample)\tRUNNING\t-\t-\t-\t-\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_trace(path)
+
+    assert summary["other_task_count"] == 1
+    assert summary["all_tasks_successful"] is False
+
+
 def test_storage_measurement_counts_bytes_and_ignores_symlinks(tmp_path: Path) -> None:
     root = tmp_path / "work"
     nested = root / "nested"
