@@ -1,6 +1,6 @@
 # RNA-seq Service Framework Roadmap
 
-Status: **M0 complete; M1 planned**
+Status: **M0–M1 complete; M2 planned**
 
 ## Goal
 
