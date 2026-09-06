@@ -1,0 +1,10 @@
+[workflows]
+rnaseq_name = "nf-core/rnaseq"
+rnaseq_revision = "3.26.0"
+differential_name = "nf-core/differentialabundance"
+differential_revision = "2.0.0"
+
+[policy]
+versions_are_pinned = true
+allow_development_revisions = false
+last_reviewed = "2026-09-06"
