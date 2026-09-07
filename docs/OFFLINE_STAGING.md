@@ -144,6 +144,8 @@ modified files fail verification.
 ```bash
 rnaseq-service-plan \
   --samplesheet private/intake/samplesheet.csv \
+  --input-manifest private/inputs/study-001.fastq-manifest.json \
+  --genome GRCh38 \
   --design private/intake/design.csv \
   --contrasts private/intake/contrasts.csv \
   --output private/plans/study-001.json \

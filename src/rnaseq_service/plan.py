@@ -6,11 +6,13 @@ import hashlib
 import json
 import os
 import shlex
+import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .bundle import BundleError, verify_bundle
+from .inputs import InputManifestError, verify_input_manifest
 from .preflight import PreflightReport, run_preflight
 from .workflow_lock import WorkflowLockError, load_workflow_lock
 
@@ -26,6 +28,7 @@ PROXY_VARIABLES = (
     "https_proxy",
     "no_proxy",
 )
+REFERENCE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class PlanError(ValueError):
@@ -64,6 +67,7 @@ def build_rnaseq_argv(
     workdir: Path,
     container_engine: str,
     infrastructure_config: Path | None,
+    genome: str | None,
 ) -> list[str]:
     """Return an argv vector; callers do not need to construct a shell string."""
 
@@ -96,6 +100,8 @@ def build_rnaseq_argv(
             str(outdir / "rnaseq"),
         ]
     )
+    if genome is not None:
+        argv.extend(["--genome", genome])
     return argv
 
 
@@ -113,6 +119,8 @@ def create_rnaseq_plan(
     executor: str,
     infrastructure_config: Path | None = None,
     offline_manifest: Path | None = None,
+    input_manifest: Path | None = None,
+    genome: str | None = None,
     min_replicates: int = 2,
 ) -> dict[str, object]:
     """Validate inputs and exclusively write a reproducible plan JSON."""
@@ -133,6 +141,8 @@ def create_rnaseq_plan(
         raise PlanError("--offline-manifest is only accepted in offline mode")
     if network_mode == "offline" and container_engine == "docker":
         raise PlanError("offline bundles currently support apptainer/singularity only")
+    if genome is not None and REFERENCE_KEY.fullmatch(genome) is None:
+        raise PlanError(f"invalid iGenomes reference key: {genome!r}")
 
     preflight = run_preflight(
         samplesheet,
@@ -162,6 +172,17 @@ def create_rnaseq_plan(
         offline_manifest_resolved = offline_manifest.resolve(strict=True)
 
     samplesheet_resolved = samplesheet.resolve(strict=True)
+    input_dataset: dict[str, object] | None = None
+    input_manifest_resolved: Path | None = None
+    if input_manifest is not None:
+        try:
+            input_dataset = verify_input_manifest(
+                input_manifest,
+                expected_samplesheet=samplesheet_resolved,
+            )
+        except (InputManifestError, OSError) as exc:
+            raise PlanError(f"input manifest verification failed: {exc}") from exc
+        input_manifest_resolved = input_manifest.resolve(strict=True)
     outdir_resolved = outdir.resolve()
     workdir_resolved = workdir.resolve()
     infra_resolved = (
@@ -185,6 +206,7 @@ def create_rnaseq_plan(
         workdir=workdir_resolved,
         container_engine=container_engine,
         infrastructure_config=infra_resolved,
+        genome=genome,
     )
 
     controls = {
@@ -197,6 +219,8 @@ def create_rnaseq_plan(
         controls["infrastructure_config"] = _control_file(infra_resolved)
     if offline_manifest_resolved is not None:
         controls["offline_manifest"] = _control_file(offline_manifest_resolved)
+    if input_manifest_resolved is not None:
+        controls["input_manifest"] = _control_file(input_manifest_resolved)
 
     required_environment: dict[str, str] = {}
     if bundle is not None and offline_manifest_resolved is not None:
@@ -243,6 +267,15 @@ def create_rnaseq_plan(
         "contains_client_results": False,
         "contains_secrets": False,
     }
+    if genome is not None:
+        plan["reference"] = {"mode": "igenomes", "genome": genome}
+    if input_dataset is not None:
+        plan["input_dataset"] = {
+            "manifest": str(input_manifest_resolved),
+            "n_fastq_files": input_dataset["n_fastq_files"],
+            "total_bytes": input_dataset["total_bytes"],
+            "metadata_verified_at_planning": True,
+        }
 
     output.parent.mkdir(parents=True, exist_ok=True)
     try:

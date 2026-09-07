@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from rnaseq_service.bundle import seal_bundle
+from rnaseq_service.inputs import create_input_manifest
 from rnaseq_service.plan import PlanError, create_rnaseq_plan
 from rnaseq_service.workflow_lock import WorkflowLockError, load_workflow_lock
 
@@ -228,3 +229,27 @@ def test_shell_metacharacters_remain_one_argv_value(tmp_path: Path) -> None:
     assert plan["command_argv"][index + 1] == samplesheet
     assert "'" in plan["command_preview"]
     assert not (tmp_path / "do-not-run").exists()
+
+
+def test_plan_binds_verified_input_manifest(tmp_path: Path) -> None:
+    kwargs = plan_kwargs(tmp_path)
+    manifest = tmp_path / "private" / "inputs.json"
+    create_input_manifest(samplesheet=kwargs["samplesheet"], output=manifest)
+    kwargs["input_manifest"] = manifest
+    kwargs["genome"] = "GRCh38"
+
+    plan = create_rnaseq_plan(**kwargs)
+
+    assert "input_manifest" in plan["control_files"]
+    assert plan["input_dataset"]["n_fastq_files"] == 8
+    assert plan["input_dataset"]["metadata_verified_at_planning"] is True
+    assert plan["reference"] == {"mode": "igenomes", "genome": "GRCh38"}
+    assert plan["command_argv"][-2:] == ["--genome", "GRCh38"]
+
+
+def test_unsafe_reference_key_is_rejected(tmp_path: Path) -> None:
+    kwargs = plan_kwargs(tmp_path)
+    kwargs["genome"] = "GRCh38;touch-bad"
+
+    with pytest.raises(PlanError, match="invalid iGenomes reference key"):
+        create_rnaseq_plan(**kwargs)

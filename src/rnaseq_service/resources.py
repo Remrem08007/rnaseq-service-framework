@@ -162,13 +162,15 @@ def summarize_trace(
         )
     task_count = sum(int(row["task_count"]) for row in process_rows)
     failed = sum(int(row["failed"]) for row in process_rows)
+    other = sum(int(row["other"]) for row in process_rows)
     return {
         "schema_version": 2,
         "trace": str(resolved),
         "task_count": task_count,
         "process_count": len(process_rows),
         "failed_task_count": failed,
-        "all_tasks_successful": failed == 0 and task_count > 0,
+        "other_task_count": other,
+        "all_tasks_successful": failed == 0 and other == 0 and task_count > 0,
         "missing_metric_counts": missing_metric_counts,
         "processes": process_rows,
         "metrics_are_estimates": True,

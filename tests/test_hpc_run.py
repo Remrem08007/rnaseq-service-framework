@@ -10,7 +10,9 @@ import pytest
 
 from rnaseq_service.hpc_config import write_nextflow_config
 from rnaseq_service.hpc_run import HPCRunError, prepare_launcher, query_job, submit_launcher
+from rnaseq_service.inputs import create_input_manifest
 from rnaseq_service.plan import create_rnaseq_plan
+from rnaseq_service.primary import PrimaryDeliveryError, prepare_safe_restart
 
 
 ROOT = Path(__file__).parents[1]
@@ -82,6 +84,8 @@ def make_run_plan(tmp_path: Path) -> tuple[Path, Path]:
     config = tmp_path / "generated" / "nextflow.config"
     write_nextflow_config(settings, config)
     samplesheet, design, contrasts = create_inputs(tmp_path)
+    input_manifest = tmp_path / "input-manifest.json"
+    create_input_manifest(samplesheet=samplesheet, output=input_manifest)
     plan_path = tmp_path / "plans" / "run.json"
     create_rnaseq_plan(
         samplesheet=samplesheet,
@@ -95,6 +99,8 @@ def make_run_plan(tmp_path: Path) -> tuple[Path, Path]:
         container_engine="apptainer",
         executor="slurm",
         infrastructure_config=config,
+        input_manifest=input_manifest,
+        genome="GRCh38",
     )
     return plan_path, settings
 
@@ -123,6 +129,21 @@ def test_prepare_rejects_changed_control_file(tmp_path: Path) -> None:
     config.write_text(config.read_text(encoding="utf-8") + "// changed\n", encoding="utf-8")
 
     with pytest.raises(HPCRunError, match="changed after planning"):
+        prepare_launcher(
+            run_plan=plan,
+            settings_path=settings,
+            output=tmp_path / "controller.sbatch",
+        )
+
+
+def test_prepare_requires_bound_inputs_and_reference(tmp_path: Path) -> None:
+    plan, settings = make_run_plan(tmp_path)
+    payload = json.loads(plan.read_text(encoding="utf-8"))
+    payload["control_files"].pop("input_manifest")
+    payload.pop("reference")
+    plan.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(HPCRunError, match="FASTQ input manifest"):
         prepare_launcher(
             run_plan=plan,
             settings_path=settings,
@@ -193,3 +214,73 @@ def test_status_falls_back_to_sacct_for_completed_job(
     assert result["source"] == "sacct"
     assert result["terminal"] is True
     assert result["successful"] is True
+
+
+def restart_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    plan, settings = make_run_plan(tmp_path)
+    payload = json.loads(plan.read_text(encoding="utf-8"))
+    Path(payload["execution"]["workdir"]).mkdir(parents=True)
+    launcher = tmp_path / "launch-1" / "controller.sbatch"
+    launch = prepare_launcher(run_plan=plan, settings_path=settings, output=launcher)
+    receipt = tmp_path / "launch-1" / "submission.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "submitted",
+                "job_id": "123456",
+                "launcher": str(launcher.resolve()),
+                "launcher_sha256": launch["launcher_sha256"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return plan, settings, receipt
+
+
+def test_safe_restart_requires_terminal_failure_and_reuses_workdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, settings, receipt = restart_fixture(tmp_path)
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(
+            argv, 0, "123456|OUT_OF_MEMORY|01:00:00|02:00:00|8G|0:9\n", ""
+        )
+
+    monkeypatch.setattr("rnaseq_service.hpc_run.subprocess.run", fake_run)
+    output = tmp_path / "launch-2" / "controller.sbatch"
+
+    result = prepare_safe_restart(
+        run_plan=plan,
+        settings_path=settings,
+        previous_receipt=receipt,
+        output=output,
+    )
+
+    assert result["restart_prepared"] is True
+    assert result["previous_scheduler_state"] == "OUT_OF_MEMORY"
+    assert result["submitted"] is False
+    assert "-resume" in output.read_text(encoding="utf-8")
+
+
+def test_safe_restart_refuses_active_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, settings, receipt = restart_fixture(tmp_path)
+    monkeypatch.setattr(
+        "rnaseq_service.hpc_run.subprocess.run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, "RUNNING|00:05|12:00:00|node01\n", ""
+        ),
+    )
+
+    with pytest.raises(PrimaryDeliveryError, match="not terminal"):
+        prepare_safe_restart(
+            run_plan=plan,
+            settings_path=settings,
+            previous_receipt=receipt,
+            output=tmp_path / "launch-2" / "controller.sbatch",
+        )

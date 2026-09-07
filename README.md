@@ -58,8 +58,14 @@ Once real FASTQs and reviewed intake tables exist, write a non-executing,
 immutable run plan:
 
 ```bash
+rnaseq-service-inputs \
+  --samplesheet private/intake/samplesheet.csv \
+  --output private/inputs/study-001.fastq-manifest.json
+
 rnaseq-service-plan \
   --samplesheet private/intake/samplesheet.csv \
+  --input-manifest private/inputs/study-001.fastq-manifest.json \
+  --genome GRCh38 \
   --design private/intake/design.csv \
   --contrasts private/intake/contrasts.csv \
   --output private/plans/study-001.json \
@@ -68,10 +74,12 @@ rnaseq-service-plan \
   --network-mode direct
 ```
 
-Planning requires all FASTQs to exist, validates the intake, reads the exact
-workflow lock, hashes every control file, and stores the canonical Nextflow
-argument vector. It does not run Nextflow or contact the network. Existing plan
-files are never overwritten. See [`docs/RUN_PLAN.md`](docs/RUN_PLAN.md).
+The input command hashes every FASTQ with visible progress. Planning requires
+that immutable manifest, validates the intake and reviewed iGenomes key, reads
+the exact workflow lock, hashes every control file, and stores the canonical
+Nextflow argument vector. It does not run Nextflow or contact the network.
+Existing manifests and plans are never overwritten. See
+[`docs/RUN_PLAN.md`](docs/RUN_PLAN.md).
 
 ## Operating modes
 
@@ -98,6 +106,16 @@ plus measured work/results storage with visible progress. Cluster accounts,
 partitions, modules, and filesystem paths remain external. See
 [`docs/HPC_EXECUTION.md`](docs/HPC_EXECUTION.md).
 
+## M4 primary delivery
+
+M4 verifies completed `nf-core/rnaseq` STAR/Salmon outputs against the locked
+plan, successful Nextflow task states, pipeline parameters, sample-complete
+count/TPM matrices, MultiQC, and software provenance. Required artifacts are
+hashed with progress into an immutable `pipeline_complete_qc_pending` receipt.
+Failure diagnostics classify logs without copying their content, and safe
+restart preparation refuses active/successful jobs before creating a reviewed
+`-resume` launcher. See [`docs/PRIMARY_DELIVERY.md`](docs/PRIMARY_DELIVERY.md).
+
 ## Documentation
 
 - [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.md) — supported intake,
@@ -110,6 +128,8 @@ partitions, modules, and filesystem paths remain external. See
   proxy handling, progress, bundle sealing, and offline verification;
 - [`docs/HPC_EXECUTION.md`](docs/HPC_EXECUTION.md) — external infrastructure
   settings, resumable SLURM launches, status, and resource observations;
+- [`docs/PRIMARY_DELIVERY.md`](docs/PRIMARY_DELIVERY.md) — FASTQ provenance,
+  primary completion evidence, diagnostics, and safe retries;
 - [`ROADMAP.md`](ROADMAP.md) — M0–M8 implementation plan.
 
 ## Data and privacy policy
