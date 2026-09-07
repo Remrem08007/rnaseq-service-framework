@@ -35,6 +35,13 @@ def _read_verified_plan(path: Path) -> tuple[Path, dict[str, object]]:
     workflow = payload.get("workflow")
     if not isinstance(workflow, dict) or workflow.get("name") != "nf-core/rnaseq":
         raise PrimaryDeliveryError("run plan is not for nf-core/rnaseq")
+    reference = payload.get("reference")
+    if (
+        not isinstance(reference, dict)
+        or reference.get("mode") != "igenomes"
+        or not isinstance(reference.get("genome"), str)
+    ):
+        raise PrimaryDeliveryError("run plan has no supported reviewed reference genome")
     execution = payload.get("execution")
     if not isinstance(execution, dict) or not isinstance(execution.get("outdir"), str):
         raise PrimaryDeliveryError("run plan execution record is invalid")
@@ -113,7 +120,12 @@ def _check_matrix(path: Path, expected_samples: set[str], role: str) -> dict[str
     return {"sample_columns": len(expected_samples), "header_columns": len(header)}
 
 
-def _check_params(path: Path, samplesheet: Path, rnaseq_root: Path) -> None:
+def _check_params(
+    path: Path,
+    samplesheet: Path,
+    rnaseq_root: Path,
+    genome: str,
+) -> None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -124,6 +136,8 @@ def _check_params(path: Path, samplesheet: Path, rnaseq_root: Path) -> None:
         value = payload.get(key)
         if not isinstance(value, str) or Path(value).resolve() != expected.resolve():
             raise PrimaryDeliveryError(f"pipeline params.json {key!r} does not match the run plan")
+    if payload.get("genome") != genome:
+        raise PrimaryDeliveryError("pipeline params.json 'genome' does not match the run plan")
 
 
 def _hash_file(path: Path, role: str, progress: HashProgress | None) -> str:
@@ -194,7 +208,12 @@ def inspect_primary_completion(
         "gene_counts": _check_matrix(by_role["gene_counts"], expected_samples, "gene-count matrix"),
         "gene_tpm": _check_matrix(by_role["gene_tpm"], expected_samples, "gene-TPM matrix"),
     }
-    _check_params(by_role["pipeline_params"], samplesheet, rnaseq_root)
+    _check_params(
+        by_role["pipeline_params"],
+        samplesheet,
+        rnaseq_root,
+        str(plan["reference"]["genome"]),
+    )
 
     inventory = []
     for role, path in artifacts:
@@ -218,6 +237,7 @@ def inspect_primary_completion(
         },
         "workflow": plan["workflow"],
         "runtime": plan["runtime"],
+        "reference": plan["reference"],
         "controls_verified": True,
         "task_summary": {
             "task_count": trace_summary["task_count"],

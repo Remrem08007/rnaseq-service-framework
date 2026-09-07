@@ -236,9 +236,20 @@ def test_plan_binds_verified_input_manifest(tmp_path: Path) -> None:
     manifest = tmp_path / "private" / "inputs.json"
     create_input_manifest(samplesheet=kwargs["samplesheet"], output=manifest)
     kwargs["input_manifest"] = manifest
+    kwargs["genome"] = "GRCh38"
 
     plan = create_rnaseq_plan(**kwargs)
 
     assert "input_manifest" in plan["control_files"]
     assert plan["input_dataset"]["n_fastq_files"] == 8
     assert plan["input_dataset"]["metadata_verified_at_planning"] is True
+    assert plan["reference"] == {"mode": "igenomes", "genome": "GRCh38"}
+    assert plan["command_argv"][-2:] == ["--genome", "GRCh38"]
+
+
+def test_unsafe_reference_key_is_rejected(tmp_path: Path) -> None:
+    kwargs = plan_kwargs(tmp_path)
+    kwargs["genome"] = "GRCh38;touch-bad"
+
+    with pytest.raises(PlanError, match="invalid iGenomes reference key"):
+        create_rnaseq_plan(**kwargs)

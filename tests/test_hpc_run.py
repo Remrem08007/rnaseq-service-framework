@@ -100,6 +100,7 @@ def make_run_plan(tmp_path: Path) -> tuple[Path, Path]:
         executor="slurm",
         infrastructure_config=config,
         input_manifest=input_manifest,
+        genome="GRCh38",
     )
     return plan_path, settings
 

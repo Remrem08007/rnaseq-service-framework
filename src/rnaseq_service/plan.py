@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shlex
+import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ PROXY_VARIABLES = (
     "https_proxy",
     "no_proxy",
 )
+REFERENCE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class PlanError(ValueError):
@@ -65,6 +67,7 @@ def build_rnaseq_argv(
     workdir: Path,
     container_engine: str,
     infrastructure_config: Path | None,
+    genome: str | None,
 ) -> list[str]:
     """Return an argv vector; callers do not need to construct a shell string."""
 
@@ -97,6 +100,8 @@ def build_rnaseq_argv(
             str(outdir / "rnaseq"),
         ]
     )
+    if genome is not None:
+        argv.extend(["--genome", genome])
     return argv
 
 
@@ -115,6 +120,7 @@ def create_rnaseq_plan(
     infrastructure_config: Path | None = None,
     offline_manifest: Path | None = None,
     input_manifest: Path | None = None,
+    genome: str | None = None,
     min_replicates: int = 2,
 ) -> dict[str, object]:
     """Validate inputs and exclusively write a reproducible plan JSON."""
@@ -135,6 +141,8 @@ def create_rnaseq_plan(
         raise PlanError("--offline-manifest is only accepted in offline mode")
     if network_mode == "offline" and container_engine == "docker":
         raise PlanError("offline bundles currently support apptainer/singularity only")
+    if genome is not None and REFERENCE_KEY.fullmatch(genome) is None:
+        raise PlanError(f"invalid iGenomes reference key: {genome!r}")
 
     preflight = run_preflight(
         samplesheet,
@@ -198,6 +206,7 @@ def create_rnaseq_plan(
         workdir=workdir_resolved,
         container_engine=container_engine,
         infrastructure_config=infra_resolved,
+        genome=genome,
     )
 
     controls = {
@@ -258,6 +267,8 @@ def create_rnaseq_plan(
         "contains_client_results": False,
         "contains_secrets": False,
     }
+    if genome is not None:
+        plan["reference"] = {"mode": "igenomes", "genome": genome}
     if input_dataset is not None:
         plan["input_dataset"] = {
             "manifest": str(input_manifest_resolved),

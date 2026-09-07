@@ -17,6 +17,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--samplesheet", type=Path, required=True)
     parser.add_argument("--input-manifest", type=Path, required=True)
+    parser.add_argument(
+        "--genome",
+        required=True,
+        help="reviewed nf-core iGenomes key, for example GRCh38",
+    )
     parser.add_argument("--design", type=Path, required=True)
     parser.add_argument("--contrasts", type=Path, required=True)
     parser.add_argument(
@@ -72,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
             offline_manifest=args.offline_manifest,
             min_replicates=args.min_replicates,
             input_manifest=args.input_manifest,
+            genome=args.genome,
         )
     except PreflightPlanError as exc:
         print(exc.report.to_json(), file=sys.stderr, end="")

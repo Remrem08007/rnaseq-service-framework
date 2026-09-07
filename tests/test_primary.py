@@ -75,6 +75,7 @@ def completed_fixture(tmp_path: Path) -> tuple[Path, Path]:
         container_engine="apptainer",
         executor="local",
         input_manifest=input_manifest,
+        genome="GRCh38",
     )
 
     execution = run_root / "execution"
@@ -92,7 +93,13 @@ def completed_fixture(tmp_path: Path) -> tuple[Path, Path]:
     pipeline_info.mkdir(parents=True)
     (pipeline_info / "software_versions.yml").write_text("STAR: 2.7.11b\n", encoding="utf-8")
     (pipeline_info / "params.json").write_text(
-        json.dumps({"input": str(samplesheet.resolve()), "outdir": str(rnaseq.resolve())}),
+        json.dumps(
+            {
+                "input": str(samplesheet.resolve()),
+                "outdir": str(rnaseq.resolve()),
+                "genome": "GRCh38",
+            }
+        ),
         encoding="utf-8",
     )
     (pipeline_info / "samplesheet.valid.csv").write_text(
@@ -172,7 +179,12 @@ def test_matrix_must_include_every_planned_sample(tmp_path: Path) -> None:
 def test_pipeline_params_must_match_plan(tmp_path: Path) -> None:
     plan, run_root = completed_fixture(tmp_path)
     params = run_root / "rnaseq" / "pipeline_info" / "params.json"
-    params.write_text(json.dumps({"input": "/wrong", "outdir": str(run_root / "rnaseq")}), encoding="utf-8")
+    params.write_text(
+        json.dumps(
+            {"input": "/wrong", "outdir": str(run_root / "rnaseq"), "genome": "GRCh38"}
+        ),
+        encoding="utf-8",
+    )
 
     with pytest.raises(PrimaryDeliveryError, match="'input' does not match"):
         create_primary_receipt(run_plan=plan, output=tmp_path / "receipt.json")
