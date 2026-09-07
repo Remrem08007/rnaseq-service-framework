@@ -46,6 +46,8 @@ def _fastq_rows(samplesheet: Path) -> list[dict[str, object]]:
                     if not source.is_absolute():
                         source = samplesheet.parent / source
                     resolved = source.resolve(strict=True)
+                    if resolved.stat().st_size == 0:
+                        raise InputManifestError(f"FASTQ is empty: {resolved}")
                     if resolved in seen:
                         raise InputManifestError(
                             f"resolved FASTQ appears more than once: {resolved}"

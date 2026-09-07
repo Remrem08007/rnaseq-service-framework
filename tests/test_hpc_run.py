@@ -136,6 +136,21 @@ def test_prepare_rejects_changed_control_file(tmp_path: Path) -> None:
         )
 
 
+def test_prepare_requires_bound_inputs_and_reference(tmp_path: Path) -> None:
+    plan, settings = make_run_plan(tmp_path)
+    payload = json.loads(plan.read_text(encoding="utf-8"))
+    payload["control_files"].pop("input_manifest")
+    payload.pop("reference")
+    plan.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(HPCRunError, match="FASTQ input manifest"):
+        prepare_launcher(
+            run_plan=plan,
+            settings_path=settings,
+            output=tmp_path / "controller.sbatch",
+        )
+
+
 def test_submit_reserves_receipt_and_records_job_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

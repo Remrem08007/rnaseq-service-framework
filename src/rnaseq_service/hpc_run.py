@@ -43,6 +43,15 @@ def _read_plan(path: Path) -> dict[str, object]:
     controls = payload.get("control_files")
     if not isinstance(controls, dict) or "infrastructure_config" not in controls:
         raise HPCRunError("run plan has no infrastructure config control")
+    if "input_manifest" not in controls:
+        raise HPCRunError("run plan has no checksum-bound FASTQ input manifest")
+    reference = payload.get("reference")
+    if (
+        not isinstance(reference, dict)
+        or reference.get("mode") != "igenomes"
+        or not isinstance(reference.get("genome"), str)
+    ):
+        raise HPCRunError("run plan has no supported reviewed reference genome")
     for label, record in controls.items():
         if not isinstance(record, dict):
             raise HPCRunError(f"invalid control file record: {label}")
@@ -51,15 +60,14 @@ def _read_plan(path: Path) -> dict[str, object]:
             raise HPCRunError(f"control file size changed after planning: {label}")
         if sha256_file(control_path) != record.get("sha256"):
             raise HPCRunError(f"control file checksum changed after planning: {label}")
-    input_record = controls.get("input_manifest")
-    if input_record is not None:
-        try:
-            verify_input_manifest(
-                Path(str(input_record["path"])),
-                expected_samplesheet=Path(str(controls["samplesheet"]["path"])),
-            )
-        except (InputManifestError, OSError) as exc:
-            raise HPCRunError(f"input manifest verification failed: {exc}") from exc
+    input_record = controls["input_manifest"]
+    try:
+        verify_input_manifest(
+            Path(str(input_record["path"])),
+            expected_samplesheet=Path(str(controls["samplesheet"]["path"])),
+        )
+    except (InputManifestError, OSError) as exc:
+        raise HPCRunError(f"input manifest verification failed: {exc}") from exc
     return payload
 
 

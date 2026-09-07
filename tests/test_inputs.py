@@ -81,3 +81,11 @@ def test_manifest_must_match_expected_samplesheet(tmp_path: Path) -> None:
 
     with pytest.raises(InputManifestError, match="different samplesheet"):
         verify_input_manifest(output, expected_samplesheet=other)
+
+
+def test_empty_fastq_is_rejected(tmp_path: Path) -> None:
+    samplesheet, paths = samplesheet_fixture(tmp_path)
+    paths[0].write_bytes(b"")
+
+    with pytest.raises(InputManifestError, match="FASTQ is empty"):
+        create_input_manifest(samplesheet=samplesheet, output=tmp_path / "inputs.json")
