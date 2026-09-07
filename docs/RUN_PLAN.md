@@ -8,11 +8,22 @@ results.
 
 ## Create a plan
 
-Real FASTQ files must exist because planning always enables filesystem checks.
+Seal the FASTQ dataset before planning:
+
+```bash
+rnaseq-service-inputs \
+  --samplesheet private/intake/samplesheet.csv \
+  --output private/inputs/study-001.fastq-manifest.json
+```
+
+Real FASTQ files must exist because manifest creation and planning enable
+filesystem checks.
 
 ```bash
 rnaseq-service-plan \
   --samplesheet private/intake/samplesheet.csv \
+  --input-manifest private/inputs/study-001.fastq-manifest.json \
+  --genome GRCh38 \
   --design private/intake/design.csv \
   --contrasts private/intake/contrasts.csv \
   --workflow-lock config/workflows.toml \
@@ -33,6 +44,7 @@ templates themselves arrive in M3.
 - exact upstream workflow name and revision;
 - creation time and schema version;
 - SHA-256, size, and resolved path for each control file;
+- a bound FASTQ manifest and reviewed iGenomes reference key;
 - complete preflight outcome;
 - executor, container engine, network mode, output directory, and work directory;
 - a structured `command_argv` list;
@@ -40,8 +52,10 @@ templates themselves arrive in M3.
 - proxy-variable presence flags, never proxy values;
 - explicit `planned_not_executed` status.
 
-The plan intentionally does not hash large FASTQs in M1. Dataset provenance and
-efficient file identity are added before execution in a later milestone.
+M4's input-manifest step reads every FASTQ once with visible aggregate progress
+and records its SHA-256, size, modification time, sample, and read role.
+Planning binds the manifest and checks current metadata without rereading the
+entire dataset. SLURM launcher preparation repeats that quick metadata check.
 
 ## Immutability
 

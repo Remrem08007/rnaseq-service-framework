@@ -18,6 +18,11 @@ investigator review.
 - one row per lane in the upstream-compatible sample sheet;
 - categorical fixed-effect comparisons with at least two biological replicates
   in each requested level;
+
+The current automated primary-processing launch profile requires a reviewed
+nf-core iGenomes key and uses STAR/Salmon. Custom FASTA/GTF or custom prebuilt
+index contracts require a future checksum-bound extension and are not silently
+accepted as equivalent inputs.
 - pinned `nf-core/rnaseq` primary processing;
 - pinned `nf-core/differentialabundance` downstream analysis;
 - local or SLURM execution with Apptainer;

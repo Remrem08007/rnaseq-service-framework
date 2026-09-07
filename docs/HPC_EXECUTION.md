@@ -61,6 +61,8 @@ output path so the earlier execution contract remains attributable.
 ```bash
 rnaseq-service-plan \
   --samplesheet private/intake/samplesheet.csv \
+  --input-manifest private/inputs/study-001.fastq-manifest.json \
+  --genome GRCh38 \
   --design private/intake/design.csv \
   --contrasts private/intake/contrasts.csv \
   --output private/plans/study-001.json \
@@ -156,7 +158,7 @@ differ from storage-system quotas or snapshots.
 ## Reference reuse
 
 When `paths.reference_cache` is present, the renderer sets nf-core's
-`params.igenomes_base` to that shared absolute path. The study still needs a
-reviewed genome selection. Custom FASTA, GTF, and aligner indexes will be bound
-to the primary-processing launch contract in M4 rather than inferred from a
-directory name.
+`params.igenomes_base` to that shared absolute path. M4 requires an explicit,
+reviewed `--genome` key in every new CLI-generated plan and checks the completed
+pipeline used the same key. Custom FASTA/GTF and custom index manifests are not
+yet supported by the wrapper.
