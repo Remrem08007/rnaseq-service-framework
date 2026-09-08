@@ -247,6 +247,13 @@ def inspect_primary_completion(
         ("pipeline_params", _required_file(rnaseq_root / "pipeline_info" / "params.json", "pipeline parameters")),
         ("validated_samplesheet", _required_file(rnaseq_root / "pipeline_info" / "samplesheet.valid.csv", "validated samplesheet")),
         ("gene_counts", _required_file(rnaseq_root / "star_salmon" / "salmon.merged.gene_counts.tsv", "gene-count matrix")),
+        (
+            "gene_lengths",
+            _required_file(
+                rnaseq_root / "star_salmon" / "salmon.merged.gene_lengths.tsv",
+                "gene-length matrix",
+            ),
+        ),
         ("gene_tpm", _required_file(rnaseq_root / "star_salmon" / "salmon.merged.gene_tpm.tsv", "gene-TPM matrix")),
         ("multiqc_report", _one_match(rnaseq_root, "multiqc/*/multiqc_report.html", "MultiQC report")),
     ]
@@ -282,6 +289,9 @@ def inspect_primary_completion(
         raise PrimaryDeliveryError("planned samplesheet contains no samples")
     matrix_checks = {
         "gene_counts": _check_matrix(by_role["gene_counts"], expected_samples, "gene-count matrix"),
+        "gene_lengths": _check_matrix(
+            by_role["gene_lengths"], expected_samples, "gene-length matrix"
+        ),
         "gene_tpm": _check_matrix(by_role["gene_tpm"], expected_samples, "gene-TPM matrix"),
     }
     _check_params(
