@@ -410,3 +410,225 @@ def evaluate_qc(
         shutil.rmtree(outdir)
         raise
     return payload
+
+
+def _verified_record(path: Path, record: dict[str, object], label: str) -> None:
+    if not path.is_file() or path.stat().st_size != record.get("size_bytes"):
+        raise QCError(f"{label} size changed after QC assessment")
+    if sha256_file(path) != record.get("sha256"):
+        raise QCError(f"{label} checksum changed after QC assessment")
+
+
+def _read_decisions(
+    path: Path, expected_samples: list[str], flagged_samples: set[str]
+) -> tuple[Path, list[dict[str, str]]]:
+    try:
+        resolved = path.resolve(strict=True)
+        with resolved.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            required = ["sample", "decision", "reason", "reviewer"]
+            if reader.fieldnames != required:
+                raise QCError(
+                    "QC decisions header must be exactly: sample, decision, reason, reviewer"
+                )
+            rows = [
+                {key: (value or "").strip() for key, value in row.items()}
+                for row in reader
+                if any((value or "").strip() for value in row.values())
+            ]
+    except (OSError, csv.Error, UnicodeError) as exc:
+        raise QCError(f"could not read QC decisions: {exc}") from exc
+    by_sample: dict[str, dict[str, str]] = {}
+    for row in rows:
+        sample = row["sample"]
+        if sample in by_sample:
+            raise QCError(f"duplicate QC decision for sample: {sample!r}")
+        by_sample[sample] = row
+    expected = set(expected_samples)
+    missing = sorted(expected - set(by_sample))
+    unknown = sorted(set(by_sample) - expected)
+    if missing or unknown:
+        raise QCError(
+            f"QC decisions do not match assessed samples: missing={missing}, unknown={unknown}"
+        )
+    ordered = [by_sample[sample] for sample in expected_samples]
+    for row in ordered:
+        sample = row["sample"]
+        if row["decision"] not in {"include", "exclude"}:
+            raise QCError(f"sample {sample!r} requires decision 'include' or 'exclude'")
+        if not row["reviewer"]:
+            raise QCError(f"sample {sample!r} requires a reviewer")
+        if row["decision"] == "exclude" and not row["reason"]:
+            raise QCError(f"excluded sample {sample!r} requires a reason")
+        if row["decision"] == "include" and sample in flagged_samples and not row["reason"]:
+            raise QCError(f"flagged included sample {sample!r} requires a review reason")
+    return resolved, ordered
+
+
+def _verified_plan_from_assessment(
+    assessment: dict[str, object]
+) -> tuple[Path, dict[str, object]]:
+    completion_record = assessment.get("primary_completion")
+    if not isinstance(completion_record, dict):
+        raise QCError("QC assessment has no primary completion record")
+    completion_path = Path(str(completion_record.get("path", ""))).resolve()
+    _verified_record(completion_path, completion_record, "primary completion receipt")
+    _, completion, _ = _read_completion(completion_path)
+    plan_record = completion.get("run_plan")
+    if not isinstance(plan_record, dict):
+        raise QCError("primary completion receipt has no run-plan record")
+    plan_path = Path(str(plan_record.get("path", ""))).resolve()
+    _verified_record(plan_path, plan_record, "run plan")
+    _, plan = _read_json(plan_path, "run plan")
+    return plan_path, plan
+
+
+def _verified_control(plan: dict[str, object], role: str) -> Path:
+    controls = plan.get("control_files")
+    if not isinstance(controls, dict) or not isinstance(controls.get(role), dict):
+        raise QCError(f"run plan has no {role} control")
+    record = controls[role]
+    path = Path(str(record.get("path", ""))).resolve()
+    _verified_record(path, record, f"run-plan {role} control")
+    return path
+
+
+def _read_table(path: Path) -> list[dict[str, str]]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            return [
+                {str(key).strip(): (value or "").strip() for key, value in row.items()}
+                for row in csv.DictReader(handle)
+            ]
+    except (OSError, csv.Error, UnicodeError) as exc:
+        raise QCError(f"could not read control table {path}: {exc}") from exc
+
+
+def _contrast_balance(
+    plan: dict[str, object], accepted: set[str]
+) -> tuple[int, list[dict[str, object]]]:
+    policy = plan.get("intake_policy")
+    if not isinstance(policy, dict) or not isinstance(policy.get("min_replicates"), int):
+        raise QCError("run plan has no bound minimum-replicate policy")
+    minimum = policy["min_replicates"]
+    design_path = _verified_control(plan, "design")
+    contrasts_path = _verified_control(plan, "contrasts")
+    design_rows = _read_table(design_path)
+    design: dict[str, dict[str, str]] = {}
+    for row in design_rows:
+        sample = row.get("sample", "")
+        if not sample or sample in design:
+            raise QCError("design control must have one non-empty row per sample")
+        design[sample] = row
+    balances: list[dict[str, object]] = []
+    for contrast in _read_table(contrasts_path):
+        contrast_id = contrast.get("contrast_id", "")
+        variable = contrast.get("variable", "")
+        reference = contrast.get("reference", "")
+        target = contrast.get("target", "")
+        counts = {
+            reference: sum(
+                sample in accepted and row.get(variable) == reference
+                for sample, row in design.items()
+            ),
+            target: sum(
+                sample in accepted and row.get(variable) == target
+                for sample, row in design.items()
+            ),
+        }
+        balances.append(
+            {
+                "contrast_id": contrast_id,
+                "variable": variable,
+                "reference": reference,
+                "target": target,
+                "accepted_reference_replicates": counts[reference],
+                "accepted_target_replicates": counts[target],
+                "minimum_replicates": minimum,
+            }
+        )
+        if counts[reference] < minimum or counts[target] < minimum:
+            raise QCError(
+                f"QC decisions leave contrast {contrast_id!r} below {minimum} replicates: "
+                f"{reference}={counts[reference]}, {target}={counts[target]}"
+            )
+    return minimum, balances
+
+
+def finalize_qc(
+    *, assessment_path: Path, decisions_path: Path, outdir: Path
+) -> dict[str, object]:
+    """Seal explicit human decisions into an accepted-sample manifest."""
+
+    if outdir.exists():
+        raise QCError(f"refusing to overwrite existing QC acceptance directory: {outdir}")
+    assessment_resolved, assessment = _read_json(assessment_path, "QC assessment")
+    if assessment.get("schema_version") != 1 or assessment.get("status") != "review_required":
+        raise QCError("QC assessment is not eligible for finalization")
+    policy_record = assessment.get("policy")
+    if not isinstance(policy_record, dict):
+        raise QCError("QC assessment has no policy record")
+    policy_path = Path(str(policy_record.get("path", ""))).resolve()
+    _verified_record(policy_path, policy_record, "QC policy")
+    evidence = assessment.get("evidence")
+    if not isinstance(evidence, dict):
+        raise QCError("QC assessment has no evidence inventory")
+    for metric, record in evidence.items():
+        if not isinstance(record, dict) or not record.get("bound_by_completion"):
+            continue
+        evidence_path = Path(str(record.get("path", ""))).resolve()
+        _verified_record(evidence_path, record, f"QC evidence for {metric}")
+    raw_samples = assessment.get("samples")
+    if not isinstance(raw_samples, list) or not all(isinstance(row, dict) for row in raw_samples):
+        raise QCError("QC assessment has an invalid sample list")
+    samples = [str(row.get("sample", "")) for row in raw_samples]
+    flagged = {str(sample) for sample in assessment.get("flagged_samples", [])}
+    decisions_resolved, decisions = _read_decisions(decisions_path, samples, flagged)
+    accepted = [row["sample"] for row in decisions if row["decision"] == "include"]
+    excluded = [row for row in decisions if row["decision"] == "exclude"]
+    plan_path, plan = _verified_plan_from_assessment(assessment)
+    minimum, balances = _contrast_balance(plan, set(accepted))
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "stage": "qc_accepted_for_differential_analysis",
+        "status": "accepted",
+        "qc_assessment": {
+            "path": str(assessment_resolved),
+            "size_bytes": assessment_resolved.stat().st_size,
+            "sha256": sha256_file(assessment_resolved),
+        },
+        "decisions": {
+            "path": str(decisions_resolved),
+            "size_bytes": decisions_resolved.stat().st_size,
+            "sha256": sha256_file(decisions_resolved),
+        },
+        "run_plan": {"path": str(plan_path), "sha256": sha256_file(plan_path)},
+        "minimum_replicates": minimum,
+        "contrast_balance": balances,
+        "n_assessed": len(samples),
+        "n_accepted": len(accepted),
+        "n_excluded": len(excluded),
+        "accepted_samples": accepted,
+        "excluded_samples": excluded,
+        "review_decisions": decisions,
+        "automatic_exclusions": 0,
+        "human_review_complete": True,
+    }
+    outdir.mkdir(parents=True, mode=0o700)
+    try:
+        receipt = outdir / "qc_acceptance.json"
+        with receipt.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.chmod(receipt, 0o600)
+        manifest = outdir / "accepted_samples.tsv"
+        with manifest.open("x", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+            writer.writerow(["sample"])
+            writer.writerows([sample] for sample in accepted)
+        os.chmod(manifest, 0o600)
+    except Exception:
+        shutil.rmtree(outdir)
+        raise
+    return payload

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from rnaseq_service.primary import create_primary_receipt
-from rnaseq_service.qc import QCError, evaluate_qc
+from rnaseq_service.qc import QCError, evaluate_qc, finalize_qc
 from test_primary import completed_fixture
 
 
@@ -166,3 +166,86 @@ def test_categorical_strand_disagreement_is_flagged(tmp_path: Path) -> None:
 
     assert result["flagged_samples"] == ["treated_2"]
     assert result["samples"][3]["flags"][0]["kind"] == "unexpected_category"
+
+
+def write_reviewed_decisions(path: Path, *, treated_2: tuple[str, str] = ("include", "reviewed low mapping")) -> None:
+    rows = [
+        ["control_1", "include", "", "reviewer@example.org"],
+        ["control_2", "include", "", "reviewer@example.org"],
+        ["treated_1", "include", "", "reviewer@example.org"],
+        ["treated_2", treated_2[0], treated_2[1], "reviewer@example.org"],
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(["sample", "decision", "reason", "reviewer"])
+        writer.writerows(rows)
+
+
+def test_reviewed_qc_is_sealed_with_contrast_balance(tmp_path: Path) -> None:
+    completion, policy = qc_fixture(tmp_path)
+    assessment_dir = tmp_path / "assessment"
+    evaluate_qc(
+        completion_receipt=completion,
+        policy_path=policy,
+        outdir=assessment_dir,
+    )
+    decisions = tmp_path / "reviewed.tsv"
+    write_reviewed_decisions(decisions)
+
+    result = finalize_qc(
+        assessment_path=assessment_dir / "qc_assessment.json",
+        decisions_path=decisions,
+        outdir=tmp_path / "accepted",
+    )
+
+    assert result["stage"] == "qc_accepted_for_differential_analysis"
+    assert result["n_accepted"] == 4
+    assert result["n_excluded"] == 0
+    assert result["contrast_balance"][0]["accepted_target_replicates"] == 2
+    assert result["automatic_exclusions"] == 0
+    assert stat.S_IMODE((tmp_path / "accepted" / "qc_acceptance.json").stat().st_mode) == 0o600
+
+
+def test_exclusion_requires_reason(tmp_path: Path) -> None:
+    completion, policy = qc_fixture(tmp_path)
+    assessment_dir = tmp_path / "assessment"
+    evaluate_qc(completion_receipt=completion, policy_path=policy, outdir=assessment_dir)
+    decisions = tmp_path / "reviewed.tsv"
+    write_reviewed_decisions(decisions, treated_2=("exclude", ""))
+
+    with pytest.raises(QCError, match="requires a reason"):
+        finalize_qc(
+            assessment_path=assessment_dir / "qc_assessment.json",
+            decisions_path=decisions,
+            outdir=tmp_path / "accepted",
+        )
+
+
+def test_exclusion_cannot_break_contrast_replication(tmp_path: Path) -> None:
+    completion, policy = qc_fixture(tmp_path)
+    assessment_dir = tmp_path / "assessment"
+    evaluate_qc(completion_receipt=completion, policy_path=policy, outdir=assessment_dir)
+    decisions = tmp_path / "reviewed.tsv"
+    write_reviewed_decisions(decisions, treated_2=("exclude", "failed library QC"))
+
+    with pytest.raises(QCError, match="below 2 replicates"):
+        finalize_qc(
+            assessment_path=assessment_dir / "qc_assessment.json",
+            decisions_path=decisions,
+            outdir=tmp_path / "accepted",
+        )
+
+
+def test_flagged_inclusion_requires_review_reason(tmp_path: Path) -> None:
+    completion, policy = qc_fixture(tmp_path)
+    assessment_dir = tmp_path / "assessment"
+    evaluate_qc(completion_receipt=completion, policy_path=policy, outdir=assessment_dir)
+    decisions = tmp_path / "reviewed.tsv"
+    write_reviewed_decisions(decisions, treated_2=("include", ""))
+
+    with pytest.raises(QCError, match="requires a review reason"):
+        finalize_qc(
+            assessment_path=assessment_dir / "qc_assessment.json",
+            decisions_path=decisions,
+            outdir=tmp_path / "accepted",
+        )

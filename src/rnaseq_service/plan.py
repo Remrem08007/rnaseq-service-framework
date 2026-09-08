@@ -247,6 +247,7 @@ def create_rnaseq_plan(
         "runtime": asdict(lock.runtime),
         "workflow_lock_last_reviewed": lock.last_reviewed,
         "control_files": controls,
+        "intake_policy": {"min_replicates": min_replicates},
         "preflight": asdict(preflight),
         "execution": {
             "executor": executor,

@@ -244,6 +244,7 @@ def test_plan_binds_verified_input_manifest(tmp_path: Path) -> None:
     assert plan["input_dataset"]["n_fastq_files"] == 8
     assert plan["input_dataset"]["metadata_verified_at_planning"] is True
     assert plan["reference"] == {"mode": "igenomes", "genome": "GRCh38"}
+    assert plan["intake_policy"]["min_replicates"] == 2
     assert plan["command_argv"][-2:] == ["--genome", "GRCh38"]
 
 
