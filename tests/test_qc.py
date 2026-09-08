@@ -9,6 +9,7 @@ import pytest
 
 from rnaseq_service.primary import create_primary_receipt
 from rnaseq_service.qc import QCError, evaluate_qc, finalize_qc
+from rnaseq_service.qc_cli import main as qc_main
 from test_primary import completed_fixture
 
 
@@ -249,3 +250,47 @@ def test_flagged_inclusion_requires_review_reason(tmp_path: Path) -> None:
             decisions_path=decisions,
             outdir=tmp_path / "accepted",
         )
+
+
+def test_qc_cli_assess_and_finalize_round_trip(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    completion, policy = qc_fixture(tmp_path)
+    assessment_dir = tmp_path / "assessment"
+
+    assert qc_main(
+        [
+            "assess",
+            "--completion-receipt",
+            str(completion),
+            "--policy",
+            str(policy),
+            "--outdir",
+            str(assessment_dir),
+            "--quiet",
+        ]
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "review_required"
+    decisions = assessment_dir / "qc_decisions.tsv"
+    write_reviewed_decisions(decisions)
+    accepted_dir = tmp_path / "accepted"
+
+    assert qc_main(
+        [
+            "finalize",
+            "--assessment",
+            str(assessment_dir / "qc_assessment.json"),
+            "--decisions",
+            str(decisions),
+            "--outdir",
+            str(accepted_dir),
+        ]
+    ) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {
+        "automatic_exclusions": 0,
+        "n_accepted": 4,
+        "n_assessed": 4,
+        "n_excluded": 0,
+        "status": "accepted",
+    }
