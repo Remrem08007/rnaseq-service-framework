@@ -112,6 +112,9 @@ def completed_fixture(tmp_path: Path) -> tuple[Path, Path]:
     header = "gene_id\t" + "\t".join(samples) + "\n"
     row = "ENSG000001\t1\t2\t3\t4\n"
     (quantification / "salmon.merged.gene_counts.tsv").write_text(header + row, encoding="utf-8")
+    (quantification / "salmon.merged.gene_lengths.tsv").write_text(
+        header + row, encoding="utf-8"
+    )
     (quantification / "salmon.merged.gene_tpm.tsv").write_text(header + row, encoding="utf-8")
     multiqc = rnaseq / "multiqc" / "star_salmon"
     data = multiqc / "multiqc_report_data"
@@ -148,7 +151,7 @@ def test_completed_run_creates_private_immutable_receipt(tmp_path: Path) -> None
         "multiqc_data.json", "multiqc_general_stats.txt"
     }
     assert {item["role"] for item in result["artifacts"]} >= {
-        "gene_counts", "gene_tpm", "multiqc_report", "multiqc_general_stats",
+        "gene_counts", "gene_lengths", "gene_tpm", "multiqc_report", "multiqc_general_stats",
         "multiqc_data_json", "software_versions"
     }
     assert progress
@@ -221,6 +224,15 @@ def test_matrix_must_include_every_planned_sample(tmp_path: Path) -> None:
     )
 
     with pytest.raises(PrimaryDeliveryError, match="missing 1 planned sample"):
+        create_primary_receipt(run_plan=plan, output=tmp_path / "receipt.json")
+
+
+def test_gene_lengths_are_required_for_differential_handoff(tmp_path: Path) -> None:
+    plan, run_root = completed_fixture(tmp_path)
+    lengths = run_root / "rnaseq" / "star_salmon" / "salmon.merged.gene_lengths.tsv"
+    lengths.unlink()
+
+    with pytest.raises(PrimaryDeliveryError, match="gene-length matrix"):
         create_primary_receipt(run_plan=plan, output=tmp_path / "receipt.json")
 
 

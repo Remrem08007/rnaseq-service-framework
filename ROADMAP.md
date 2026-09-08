@@ -1,6 +1,6 @@
 # RNA-seq Service Framework Roadmap
 
-Status: **M0–M5 complete; M6 planned**
+Status: **M0–M6 complete; M7 planned**
 
 ## Goal
 
@@ -74,7 +74,9 @@ repository invented the underlying RNA-seq methods.
 - lock the accepted sample set and design;
 - convert validated contrasts to pinned `nf-core/differentialabundance` inputs;
 - run appropriate supported analysis profiles;
-- verify expected tables, plots, enrichment, and report artifacts.
+- verify expected tables, plots, and report artifacts;
+- record enrichment as disabled until its study-specific inputs are reviewed;
+- seal successful results as interpretation-pending, without automatic claims.
 
 ### M7 — Synthetic end-to-end validation
 

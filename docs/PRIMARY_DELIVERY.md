@@ -137,8 +137,8 @@ The command checks:
 - only successful terminal task states in the Nextflow trace;
 - the outer Nextflow report, trace, timeline, and DAG;
 - nf-core software versions, parameters, and validated samplesheet;
-- the default STAR/Salmon gene-count and gene-TPM matrices;
-- every planned biological sample in both matrix headers;
+- the default STAR/Salmon gene-count, gene-length, and gene-TPM matrices;
+- every planned biological sample in all three matrix headers;
 - exactly one merged MultiQC report and exactly one non-empty parsed-data
   directory named `multiqc_report_data` (current 3.26 output) or
   `multiqc_data` (documented/legacy output);
