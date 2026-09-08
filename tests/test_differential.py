@@ -81,6 +81,10 @@ def completed_differential_fixture(tmp_path: Path) -> tuple[Path, Path]:
                 "observations_id_col": "sample",
                 "features_id_col": "gene_id",
                 "genome": "GRCh38",
+                "differential_method": "deseq2",
+                "deseq2_vs_method": "vst",
+                "functional_method": "none",
+                "skip_reports": False,
             }
         ),
         encoding="utf-8",

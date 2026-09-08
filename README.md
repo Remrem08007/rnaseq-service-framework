@@ -127,6 +127,19 @@ include/exclude decisions, reviewers, and reasons before the framework seals an
 accepted-sample manifest and verifies every requested contrast still has enough
 replicates. See [`docs/QC_ACCEPTANCE.md`](docs/QC_ACCEPTANCE.md).
 
+## M6 differential-analysis handoff
+
+M6 converts the sealed accepted-sample set into private observations, raw-count,
+gene-length, and contrast inputs for pinned `nf-core/differentialabundance`
+2.0.0. It supports local, SLURM, direct, proxy, and verified-offline execution
+without copying rejected samples back into the analysis. The baseline profile
+locks DESeq2 and records that enrichment is not enabled without a separate
+scientific choice. A successful trace, parameters, sample set, processed
+matrices, per-contrast tables/plots, report, and editable bundle are verified
+and hashed with progress before an immutable interpretation-pending receipt can
+be written. See
+[`docs/DIFFERENTIAL_HANDOFF.md`](docs/DIFFERENTIAL_HANDOFF.md).
+
 ## Documentation
 
 - [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.md) — supported intake,
@@ -143,6 +156,9 @@ replicates. See [`docs/QC_ACCEPTANCE.md`](docs/QC_ACCEPTANCE.md).
   primary completion evidence, diagnostics, and safe retries;
 - [`docs/QC_ACCEPTANCE.md`](docs/QC_ACCEPTANCE.md) — configurable MultiQC
   evidence, flags, human decisions, and accepted samples;
+- [`docs/DIFFERENTIAL_HANDOFF.md`](docs/DIFFERENTIAL_HANDOFF.md) — accepted-only
+  matrices, pinned DESeq2 planning, execution, output verification, and
+  interpretation boundaries;
 - [`ROADMAP.md`](ROADMAP.md) — M0–M8 implementation plan.
 
 ## Data and privacy policy

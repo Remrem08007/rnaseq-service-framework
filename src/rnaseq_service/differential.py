@@ -740,6 +740,10 @@ def _check_differential_params(
         "observations_id_col": "sample",
         "features_id_col": "gene_id",
         "genome": str(plan["reference"]["genome"]),
+        "differential_method": "deseq2",
+        "deseq2_vs_method": "vst",
+        "functional_method": "none",
+        "skip_reports": False,
     }
     for key, expected in expected_values.items():
         value = params.get(key)
