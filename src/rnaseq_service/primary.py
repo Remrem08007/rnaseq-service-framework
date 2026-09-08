@@ -92,6 +92,23 @@ def _one_match(root: Path, pattern: str, role: str) -> Path:
     return _required_file(matches[0], role)
 
 
+def _one_named_path(parent: Path, names: tuple[str, ...], role: str, *, directory: bool) -> Path:
+    candidates = [parent / name for name in names]
+    matches = (
+        [path for path in candidates if path.is_dir()]
+        if directory
+        else [path for path in candidates if path.is_file()]
+    )
+    if len(matches) != 1:
+        joined = ", ".join(str(path) for path in candidates)
+        raise PrimaryDeliveryError(
+            f"expected exactly one {role} among [{joined}]; found {len(matches)}"
+        )
+    if directory:
+        return matches[0].resolve()
+    return _required_file(matches[0], role)
+
+
 def _samples(samplesheet: Path) -> set[str]:
     try:
         with samplesheet.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -157,6 +174,38 @@ def _hash_file(path: Path, role: str, progress: HashProgress | None) -> str:
     return digest.hexdigest()
 
 
+def _hash_directory_files(root: Path, progress: HashProgress | None) -> list[dict[str, object]]:
+    import hashlib
+
+    paths: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise PrimaryDeliveryError(f"MultiQC data directory contains a symlink: {path}")
+        if path.is_file():
+            paths.append(path)
+    total = sum(path.stat().st_size for path in paths)
+    completed = 0
+    inventory: list[dict[str, object]] = []
+    for path in paths:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+                completed += len(chunk)
+                if progress is not None:
+                    progress("multiqc_data_directory", completed, total)
+        inventory.append(
+            {
+                "relative_path": str(path.relative_to(root)),
+                "size_bytes": path.stat().st_size,
+                "sha256": digest.hexdigest(),
+            }
+        )
+    if progress is not None and total == 0:
+        progress("multiqc_data_directory", 0, 0)
+    return inventory
+
+
 def inspect_primary_completion(
     run_plan: Path,
     *,
@@ -186,7 +235,15 @@ def inspect_primary_completion(
         ("nextflow_trace", trace),
         ("nextflow_timeline", _required_file(run_root / "execution" / "timeline.html", "Nextflow timeline")),
         ("nextflow_dag", _required_file(run_root / "execution" / "dag.html", "Nextflow DAG")),
-        ("software_versions", _required_file(rnaseq_root / "pipeline_info" / "software_versions.yml", "software versions")),
+        (
+            "software_versions",
+            _one_named_path(
+                rnaseq_root / "pipeline_info",
+                ("software_versions.yml", "nf_core_rnaseq_software_mqc_versions.yml"),
+                "software versions file",
+                directory=False,
+            ),
+        ),
         ("pipeline_params", _required_file(rnaseq_root / "pipeline_info" / "params.json", "pipeline parameters")),
         ("validated_samplesheet", _required_file(rnaseq_root / "pipeline_info" / "samplesheet.valid.csv", "validated samplesheet")),
         ("gene_counts", _required_file(rnaseq_root / "star_salmon" / "salmon.merged.gene_counts.tsv", "gene-count matrix")),
@@ -194,12 +251,31 @@ def inspect_primary_completion(
         ("multiqc_report", _one_match(rnaseq_root, "multiqc/*/multiqc_report.html", "MultiQC report")),
     ]
     by_role = dict(artifacts)
-    multiqc_data = by_role["multiqc_report"].parent / "multiqc_data"
-    if not multiqc_data.is_dir():
-        raise PrimaryDeliveryError(f"missing required MultiQC data directory: {multiqc_data}")
+    multiqc_data = _one_named_path(
+        by_role["multiqc_report"].parent,
+        ("multiqc_report_data", "multiqc_data"),
+        "MultiQC data directory",
+        directory=True,
+    )
     storage = measure_storage({"multiqc_data": multiqc_data})
     if storage[0]["file_count"] == 0:
         raise PrimaryDeliveryError("MultiQC data directory contains no files")
+    artifacts.extend(
+        [
+            (
+                "multiqc_data_json",
+                _required_file(multiqc_data / "multiqc_data.json", "MultiQC data JSON"),
+            ),
+            (
+                "multiqc_general_stats",
+                _required_file(
+                    multiqc_data / "multiqc_general_stats.txt",
+                    "MultiQC general-statistics table",
+                ),
+            ),
+        ]
+    )
+    by_role = dict(artifacts)
 
     expected_samples = _samples(samplesheet)
     if not expected_samples:
@@ -226,8 +302,9 @@ def inspect_primary_completion(
                 "sha256": _hash_file(path, role, progress),
             }
         )
+    multiqc_files = _hash_directory_files(multiqc_data, progress)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "stage": "pipeline_complete_qc_pending",
         "run_plan": {
@@ -252,6 +329,7 @@ def inspect_primary_completion(
             "report": str(by_role["multiqc_report"]),
             "data_directory": str(multiqc_data.resolve()),
             "data_storage": storage[0],
+            "files": multiqc_files,
         },
         "qc_status": "pending_review",
         "contains_client_results": True,

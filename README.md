@@ -116,6 +116,17 @@ Failure diagnostics classify logs without copying their content, and safe
 restart preparation refuses active/successful jobs before creating a reviewed
 `-resume` launcher. See [`docs/PRIMARY_DELIVERY.md`](docs/PRIMARY_DELIVERY.md).
 
+## M5 QC acceptance
+
+M5 reads checksum-bound parsed MultiQC evidence through a study-reviewed TOML
+policy. Numeric mapping, duplication, and complexity measures can have explicit
+limits and robust median/MAD outlier flags; categorical evidence supports checks
+such as strandedness agreement. Missing required evidence produces a visible
+stop state. A flag never removes a sample automatically: a reviewer must record
+include/exclude decisions, reviewers, and reasons before the framework seals an
+accepted-sample manifest and verifies every requested contrast still has enough
+replicates. See [`docs/QC_ACCEPTANCE.md`](docs/QC_ACCEPTANCE.md).
+
 ## Documentation
 
 - [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.md) — supported intake,
@@ -130,6 +141,8 @@ restart preparation refuses active/successful jobs before creating a reviewed
   settings, resumable SLURM launches, status, and resource observations;
 - [`docs/PRIMARY_DELIVERY.md`](docs/PRIMARY_DELIVERY.md) — FASTQ provenance,
   primary completion evidence, diagnostics, and safe retries;
+- [`docs/QC_ACCEPTANCE.md`](docs/QC_ACCEPTANCE.md) — configurable MultiQC
+  evidence, flags, human decisions, and accepted samples;
 - [`ROADMAP.md`](ROADMAP.md) — M0–M8 implementation plan.
 
 ## Data and privacy policy

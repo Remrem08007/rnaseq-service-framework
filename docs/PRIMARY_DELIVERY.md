@@ -139,14 +139,16 @@ The command checks:
 - nf-core software versions, parameters, and validated samplesheet;
 - the default STAR/Salmon gene-count and gene-TPM matrices;
 - every planned biological sample in both matrix headers;
-- exactly one merged MultiQC report and a non-empty MultiQC data directory;
+- exactly one merged MultiQC report and exactly one non-empty parsed-data
+  directory named `multiqc_report_data` (current 3.26 output) or
+  `multiqc_data` (documented/legacy output);
 - agreement of pipeline input, output, and genome parameters with the plan.
 
-It then hashes each required artifact with a visible progress bar and writes a
-mode-`0600`, non-overwriting receipt. The receipt inventories paths, sizes,
-SHA-256 values, task counts, sample/matrix checks, workflow/runtime versions,
-the reference key, and MultiQC data storage.
+It then hashes each required artifact and every parsed MultiQC data file with a
+visible progress bar and writes a mode-`0600`, non-overwriting schema-version-2
+receipt. The receipt inventories paths, sizes, SHA-256 values, task counts,
+sample/matrix checks, workflow/runtime versions, the reference key, and MultiQC
+data storage.
 
-The final state is intentionally `pipeline_complete_qc_pending`. M5 must review
-mapping, strandedness, complexity, duplication, and outliers before any sample
-or study can be accepted.
+The final state is intentionally `pipeline_complete_qc_pending`. Continue with
+[`QC_ACCEPTANCE.md`](QC_ACCEPTANCE.md); pipeline success is not QC acceptance.

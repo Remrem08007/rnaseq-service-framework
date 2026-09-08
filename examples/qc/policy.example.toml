@@ -1,0 +1,46 @@
+schema_version = 1
+
+[study]
+# Metric-profile outliers are review signals, never automatic exclusions.
+robust_z_threshold = 4.5
+min_samples_for_outliers = 4
+
+[[metrics]]
+id = "uniquely_mapped_percent"
+kind = "numeric"
+source_file = "multiqc_general_stats.txt"
+sample_column = "Sample"
+value_column = "STAR_mqc-generalstats-star-uniquely_mapped_percent"
+required = true
+lower = 70.0
+upper = 100.0
+outlier = true
+
+[[metrics]]
+id = "duplication_fraction"
+kind = "numeric"
+source_file = "multiqc_general_stats.txt"
+sample_column = "Sample"
+value_column = "Picard_mqc-generalstats-picard-PERCENT_DUPLICATION"
+required = true
+lower = 0.0
+upper = 0.8
+outlier = true
+
+# This pinned workflow also exports multiqc_strand_check_summary_table.txt.
+# Add a categorical rule for its `status` column after confirming the exact
+# exported header and sample column in the run. A typical reviewed rule is:
+#
+# [[metrics]]
+# id = "strand_agreement"
+# kind = "categorical"
+# source_file = "multiqc_strand_check_summary_table.txt"
+# sample_column = "Sample"
+# value_column = "status"
+# allowed_values = ["pass"]
+# required = true
+# outlier = false
+#
+# Add study-reviewed library-complexity rules the same way using exact columns
+# from multiqc_dupradar.txt or the general-statistics table. Inspect the HTML
+# report and parsed tables first; thresholds are not universal defaults.
