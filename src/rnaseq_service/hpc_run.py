@@ -40,11 +40,30 @@ def _read_plan(path: Path) -> dict[str, object]:
         raise HPCRunError("run plan command_argv is invalid")
     if argv[0:2] != ["nextflow", "run"] or "-resume" not in argv:
         raise HPCRunError("run plan is not a resumable Nextflow command")
+    workflow = payload.get("workflow")
+    if not isinstance(workflow, dict) or not isinstance(workflow.get("name"), str):
+        raise HPCRunError("run plan workflow record is invalid")
     controls = payload.get("control_files")
     if not isinstance(controls, dict) or "infrastructure_config" not in controls:
         raise HPCRunError("run plan has no infrastructure config control")
-    if "input_manifest" not in controls:
-        raise HPCRunError("run plan has no checksum-bound FASTQ input manifest")
+    workflow_name = workflow["name"]
+    if workflow_name == "nf-core/rnaseq":
+        required_controls = {"input_manifest", "samplesheet"}
+    elif workflow_name == "nf-core/differentialabundance":
+        required_controls = {
+            "qc_acceptance",
+            "observations",
+            "gene_counts",
+            "gene_lengths",
+            "contrasts",
+        }
+    else:
+        raise HPCRunError(f"unsupported planned workflow: {workflow_name!r}")
+    missing_controls = sorted(required_controls - set(controls))
+    if missing_controls:
+        raise HPCRunError(
+            "run plan lacks required workflow controls: " + ", ".join(missing_controls)
+        )
     reference = payload.get("reference")
     if (
         not isinstance(reference, dict)
@@ -60,14 +79,32 @@ def _read_plan(path: Path) -> dict[str, object]:
             raise HPCRunError(f"control file size changed after planning: {label}")
         if sha256_file(control_path) != record.get("sha256"):
             raise HPCRunError(f"control file checksum changed after planning: {label}")
-    input_record = controls["input_manifest"]
-    try:
-        verify_input_manifest(
-            Path(str(input_record["path"])),
-            expected_samplesheet=Path(str(controls["samplesheet"]["path"])),
-        )
-    except (InputManifestError, OSError) as exc:
-        raise HPCRunError(f"input manifest verification failed: {exc}") from exc
+    if workflow_name == "nf-core/rnaseq":
+        input_record = controls["input_manifest"]
+        try:
+            verify_input_manifest(
+                Path(str(input_record["path"])),
+                expected_samplesheet=Path(str(controls["samplesheet"]["path"])),
+            )
+        except (InputManifestError, OSError) as exc:
+            raise HPCRunError(f"input manifest verification failed: {exc}") from exc
+    else:
+        try:
+            acceptance = json.loads(
+                Path(str(controls["qc_acceptance"]["path"])).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HPCRunError(f"could not read QC acceptance control: {exc}") from exc
+        if (
+            not isinstance(acceptance, dict)
+            or acceptance.get("stage") != "qc_accepted_for_differential_analysis"
+            or acceptance.get("status") != "accepted"
+            or acceptance.get("human_review_complete") is not True
+            or acceptance.get("automatic_exclusions") != 0
+        ):
+            raise HPCRunError("QC acceptance control is not eligible for launch")
+        if payload.get("accepted_sample_count") != acceptance.get("n_accepted"):
+            raise HPCRunError("differential plan sample count conflicts with QC acceptance")
     return payload
 
 

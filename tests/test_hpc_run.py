@@ -10,9 +10,11 @@ import pytest
 
 from rnaseq_service.hpc_config import write_nextflow_config
 from rnaseq_service.hpc_run import HPCRunError, prepare_launcher, query_job, submit_launcher
+from rnaseq_service.differential import create_differential_plan
 from rnaseq_service.inputs import create_input_manifest
 from rnaseq_service.plan import create_rnaseq_plan
 from rnaseq_service.primary import PrimaryDeliveryError, prepare_safe_restart
+from test_differential import accepted_fixture
 
 
 ROOT = Path(__file__).parents[1]
@@ -122,6 +124,35 @@ def test_prepare_launcher_verifies_plan_and_renders_resume(tmp_path: Path) -> No
     assert (launcher.parent / "logs").is_dir()
 
 
+def test_prepare_launcher_supports_differential_plan_without_fastqs(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    config = tmp_path / "generated" / "nextflow.config"
+    write_nextflow_config(settings, config)
+    plan_path = tmp_path / "plans" / "differential.json"
+    create_differential_plan(
+        qc_acceptance=accepted_fixture(tmp_path),
+        handoff_dir=tmp_path / "handoff",
+        output=plan_path,
+        outdir=tmp_path / "results" / "differential",
+        workdir=tmp_path / "shared-work" / "differential",
+        study_name="study001",
+        network_mode="direct",
+        container_engine="apptainer",
+        executor="slurm",
+        infrastructure_config=config,
+        seed=20260908,
+    )
+    launcher = tmp_path / "launch" / "differential.sbatch"
+
+    result = prepare_launcher(run_plan=plan_path, settings_path=settings, output=launcher)
+    rendered = launcher.read_text(encoding="utf-8")
+
+    assert result["resumable"] is True
+    assert "nf-core/differentialabundance" in rendered
+    assert "--feature_length_matrix" in rendered
+    assert "input-manifest" not in rendered
+
+
 def test_prepare_rejects_changed_control_file(tmp_path: Path) -> None:
     plan, settings = make_run_plan(tmp_path)
     payload = json.loads(plan.read_text(encoding="utf-8"))
@@ -143,7 +174,7 @@ def test_prepare_requires_bound_inputs_and_reference(tmp_path: Path) -> None:
     payload.pop("reference")
     plan.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(HPCRunError, match="FASTQ input manifest"):
+    with pytest.raises(HPCRunError, match="required workflow controls: input_manifest"):
         prepare_launcher(
             run_plan=plan,
             settings_path=settings,
