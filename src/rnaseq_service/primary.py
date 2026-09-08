@@ -92,6 +92,21 @@ def _one_match(root: Path, pattern: str, role: str) -> Path:
     return _required_file(matches[0], role)
 
 
+def _one_named_path(parent: Path, names: tuple[str, ...], role: str, *, directory: bool) -> Path:
+    candidates = [parent / name for name in names]
+    matches = [path for path in candidates if path.is_dir() if directory]
+    if not directory:
+        matches = [path for path in candidates if path.is_file()]
+    if len(matches) != 1:
+        joined = ", ".join(str(path) for path in candidates)
+        raise PrimaryDeliveryError(
+            f"expected exactly one {role} among [{joined}]; found {len(matches)}"
+        )
+    if directory:
+        return matches[0].resolve()
+    return _required_file(matches[0], role)
+
+
 def _samples(samplesheet: Path) -> set[str]:
     try:
         with samplesheet.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -186,7 +201,15 @@ def inspect_primary_completion(
         ("nextflow_trace", trace),
         ("nextflow_timeline", _required_file(run_root / "execution" / "timeline.html", "Nextflow timeline")),
         ("nextflow_dag", _required_file(run_root / "execution" / "dag.html", "Nextflow DAG")),
-        ("software_versions", _required_file(rnaseq_root / "pipeline_info" / "software_versions.yml", "software versions")),
+        (
+            "software_versions",
+            _one_named_path(
+                rnaseq_root / "pipeline_info",
+                ("software_versions.yml", "nf_core_rnaseq_software_mqc_versions.yml"),
+                "software versions file",
+                directory=False,
+            ),
+        ),
         ("pipeline_params", _required_file(rnaseq_root / "pipeline_info" / "params.json", "pipeline parameters")),
         ("validated_samplesheet", _required_file(rnaseq_root / "pipeline_info" / "samplesheet.valid.csv", "validated samplesheet")),
         ("gene_counts", _required_file(rnaseq_root / "star_salmon" / "salmon.merged.gene_counts.tsv", "gene-count matrix")),
@@ -194,9 +217,12 @@ def inspect_primary_completion(
         ("multiqc_report", _one_match(rnaseq_root, "multiqc/*/multiqc_report.html", "MultiQC report")),
     ]
     by_role = dict(artifacts)
-    multiqc_data = by_role["multiqc_report"].parent / "multiqc_data"
-    if not multiqc_data.is_dir():
-        raise PrimaryDeliveryError(f"missing required MultiQC data directory: {multiqc_data}")
+    multiqc_data = _one_named_path(
+        by_role["multiqc_report"].parent,
+        ("multiqc_report_data", "multiqc_data"),
+        "MultiQC data directory",
+        directory=True,
+    )
     storage = measure_storage({"multiqc_data": multiqc_data})
     if storage[0]["file_count"] == 0:
         raise PrimaryDeliveryError("MultiQC data directory contains no files")

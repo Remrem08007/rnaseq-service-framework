@@ -91,7 +91,9 @@ def completed_fixture(tmp_path: Path) -> tuple[Path, Path]:
     rnaseq = run_root / "rnaseq"
     pipeline_info = rnaseq / "pipeline_info"
     pipeline_info.mkdir(parents=True)
-    (pipeline_info / "software_versions.yml").write_text("STAR: 2.7.11b\n", encoding="utf-8")
+    (pipeline_info / "nf_core_rnaseq_software_mqc_versions.yml").write_text(
+        "STAR: 2.7.11b\n", encoding="utf-8"
+    )
     (pipeline_info / "params.json").write_text(
         json.dumps(
             {
@@ -112,7 +114,7 @@ def completed_fixture(tmp_path: Path) -> tuple[Path, Path]:
     (quantification / "salmon.merged.gene_counts.tsv").write_text(header + row, encoding="utf-8")
     (quantification / "salmon.merged.gene_tpm.tsv").write_text(header + row, encoding="utf-8")
     multiqc = rnaseq / "multiqc" / "star_salmon"
-    data = multiqc / "multiqc_data"
+    data = multiqc / "multiqc_report_data"
     data.mkdir(parents=True)
     (multiqc / "multiqc_report.html").write_text("<html>MultiQC</html>\n", encoding="utf-8")
     (data / "multiqc_data.json").write_text("{}\n", encoding="utf-8")
@@ -162,6 +164,39 @@ def test_missing_multiqc_report_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(PrimaryDeliveryError, match="exactly one MultiQC report"):
         create_primary_receipt(run_plan=plan, output=tmp_path / "receipt.json")
+
+
+def test_legacy_multiqc_data_name_is_supported(tmp_path: Path) -> None:
+    plan, run_root = completed_fixture(tmp_path)
+    multiqc = run_root / "rnaseq" / "multiqc" / "star_salmon"
+    (multiqc / "multiqc_report_data").rename(multiqc / "multiqc_data")
+
+    result = create_primary_receipt(run_plan=plan, output=tmp_path / "receipt.json")
+
+    assert Path(result["multiqc"]["data_directory"]).name == "multiqc_data"
+
+
+def test_ambiguous_multiqc_data_directories_are_rejected(tmp_path: Path) -> None:
+    plan, run_root = completed_fixture(tmp_path)
+    multiqc = run_root / "rnaseq" / "multiqc" / "star_salmon"
+    legacy = multiqc / "multiqc_data"
+    legacy.mkdir()
+    (legacy / "multiqc_data.json").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(PrimaryDeliveryError, match="exactly one MultiQC data directory"):
+        create_primary_receipt(run_plan=plan, output=tmp_path / "receipt.json")
+
+
+def test_documented_software_versions_name_is_supported(tmp_path: Path) -> None:
+    plan, run_root = completed_fixture(tmp_path)
+    pipeline_info = run_root / "rnaseq" / "pipeline_info"
+    actual = pipeline_info / "nf_core_rnaseq_software_mqc_versions.yml"
+    actual.rename(pipeline_info / "software_versions.yml")
+
+    result = create_primary_receipt(run_plan=plan, output=tmp_path / "receipt.json")
+
+    artifact = next(item for item in result["artifacts"] if item["role"] == "software_versions")
+    assert Path(artifact["path"]).name == "software_versions.yml"
 
 
 def test_matrix_must_include_every_planned_sample(tmp_path: Path) -> None:
