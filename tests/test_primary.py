@@ -118,6 +118,12 @@ def completed_fixture(tmp_path: Path) -> tuple[Path, Path]:
     data.mkdir(parents=True)
     (multiqc / "multiqc_report.html").write_text("<html>MultiQC</html>\n", encoding="utf-8")
     (data / "multiqc_data.json").write_text("{}\n", encoding="utf-8")
+    (data / "multiqc_general_stats.txt").write_text(
+        "Sample\tSTAR_mqc-generalstats-star-uniquely_mapped_percent\n"
+        + "\n".join(f"{sample}\t95" for sample in samples)
+        + "\n",
+        encoding="utf-8",
+    )
     return plan_path, run_root
 
 
@@ -133,14 +139,20 @@ def test_completed_run_creates_private_immutable_receipt(tmp_path: Path) -> None
     )
 
     assert result["stage"] == "pipeline_complete_qc_pending"
+    assert result["schema_version"] == 2
     assert result["qc_status"] == "pending_review"
     assert result["sample_count"] == 4
     assert result["task_summary"]["task_count"] == 2
-    assert result["multiqc"]["data_storage"]["file_count"] == 1
+    assert result["multiqc"]["data_storage"]["file_count"] == 2
+    assert {item["relative_path"] for item in result["multiqc"]["files"]} == {
+        "multiqc_data.json", "multiqc_general_stats.txt"
+    }
     assert {item["role"] for item in result["artifacts"]} >= {
-        "gene_counts", "gene_tpm", "multiqc_report", "software_versions"
+        "gene_counts", "gene_tpm", "multiqc_report", "multiqc_general_stats",
+        "multiqc_data_json", "software_versions"
     }
     assert progress
+    assert any(role == "multiqc_data_directory" for role, _, _ in progress)
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
     with pytest.raises(PrimaryDeliveryError, match="refusing to overwrite"):
         create_primary_receipt(run_plan=plan, output=output)
@@ -182,6 +194,7 @@ def test_ambiguous_multiqc_data_directories_are_rejected(tmp_path: Path) -> None
     legacy = multiqc / "multiqc_data"
     legacy.mkdir()
     (legacy / "multiqc_data.json").write_text("{}\n", encoding="utf-8")
+    (legacy / "multiqc_general_stats.txt").write_text("Sample\n", encoding="utf-8")
 
     with pytest.raises(PrimaryDeliveryError, match="exactly one MultiQC data directory"):
         create_primary_receipt(run_plan=plan, output=tmp_path / "receipt.json")
