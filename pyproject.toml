@@ -30,6 +30,7 @@ rnaseq-service-primary = "rnaseq_service.primary_cli:main"
 rnaseq-service-qc = "rnaseq_service.qc_cli:main"
 rnaseq-service-differential = "rnaseq_service.differential_cli:main"
 rnaseq-service-synthetic = "rnaseq_service.synthetic_cli:main"
+rnaseq-service-upstream-smoke = "rnaseq_service.upstream_smoke_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
