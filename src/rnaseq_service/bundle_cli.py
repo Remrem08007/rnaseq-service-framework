@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     seal.add_argument("--differential-workflow", type=Path, required=True)
     seal.add_argument("--container-root", type=Path, required=True)
     seal.add_argument("--plugin-root", type=Path, required=True)
+    seal.add_argument("--upstream-test-data-root", type=Path)
     seal.add_argument("--quiet", action="store_true")
 
     verify = subparsers.add_parser("verify", help="verify every sealed artifact")
@@ -65,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
                 differential_workflow=args.differential_workflow,
                 container_root=args.container_root,
                 plugin_root=args.plugin_root,
+                upstream_test_data_root=args.upstream_test_data_root,
                 progress=None if args.quiet else ProgressPrinter("Sealing  "),
             )
         else:

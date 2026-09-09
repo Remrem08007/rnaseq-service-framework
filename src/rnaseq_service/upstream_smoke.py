@@ -10,13 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from .bundle import BundleError, verify_bundle
 from .hpc_config import MODULE_TOKEN, SLURM_TIME, TOKEN
 from .plan import CONTAINER_ENGINES, PROXY_VARIABLES, sha256_file
 from .resources import ResourceSummaryError, summarize_trace
+from .upstream_data import UpstreamDataError, verify_upstream_test_data
 from .workflow_lock import WorkflowLockError, load_workflow_lock
 
 
-NETWORK_MODES = {"direct", "proxy"}
+NETWORK_MODES = {"auto", "direct", "proxy", "offline"}
 TEST_PROFILES = {
     "rnaseq": "test",
     "differential": "test_rnaseq_deseq2_gsea",
@@ -40,21 +42,24 @@ def _control(path: Path) -> dict[str, object]:
 def _stage_argv(
     *,
     workflow: str,
-    revision: str,
+    revision: str | None,
     profile: str,
     container_engine: str,
     root: Path,
     stage: str,
+    parameters: dict[str, str] | None = None,
 ) -> list[str]:
     execution = root / stage / "execution"
-    return [
+    argv = [
         "nextflow",
         "-log",
         str(execution / "nextflow.log"),
         "run",
         workflow,
-        "-r",
-        revision,
+    ]
+    if revision is not None:
+        argv.extend(["-r", revision])
+    argv.extend([
         "-profile",
         f"{profile},{container_engine}",
         "-work-dir",
@@ -70,7 +75,40 @@ def _stage_argv(
         str(execution / "dag.html"),
         "--outdir",
         str(root / stage / "results"),
-    ]
+    ])
+    for name, value in (parameters or {}).items():
+        argv.extend([f"--{name}", value])
+    return argv
+
+
+def _offline_components(
+    manifest: Path,
+    workflow_lock: Path,
+) -> dict[str, object]:
+    try:
+        bundle = verify_bundle(manifest, expected_workflow_lock=workflow_lock)
+        components = bundle["components"]
+        test_data_relative = components.get("upstream_test_data_root")
+        if not isinstance(test_data_relative, str):
+            raise UpstreamSmokeError(
+                "offline bundle has no verified upstream test-data component"
+            )
+        root = manifest.resolve(strict=True).parent
+        test_data_root = (root / test_data_relative).resolve(strict=True)
+        test_data = verify_upstream_test_data(test_data_root)
+    except (BundleError, UpstreamDataError, OSError) as exc:
+        raise UpstreamSmokeError(f"offline bundle verification failed: {exc}") from exc
+    return {
+        "manifest": _control(manifest),
+        "rnaseq_workflow": str((root / components["rnaseq_workflow"]).resolve()),
+        "differential_workflow": str(
+            (root / components["differential_workflow"]).resolve()
+        ),
+        "container_root": str((root / components["container_root"]).resolve()),
+        "plugin_root": str((root / components["plugin_root"]).resolve()),
+        "test_data_root": str(test_data_root),
+        "parameters": test_data["parameters"],
+    }
 
 
 def create_upstream_smoke_plan(
@@ -80,13 +118,22 @@ def create_upstream_smoke_plan(
     run_root: Path,
     network_mode: str,
     container_engine: str = "apptainer",
+    offline_manifest: Path | None = None,
 ) -> dict[str, object]:
     """Write a non-executing plan for official public-data test profiles."""
 
     if output.exists():
         raise UpstreamSmokeError(f"refusing to overwrite upstream smoke plan: {output}")
     if network_mode not in NETWORK_MODES:
-        raise UpstreamSmokeError("upstream smoke network mode must be 'direct' or 'proxy'")
+        raise UpstreamSmokeError(
+            "upstream smoke network mode must be auto, direct, proxy, or offline"
+        )
+    if network_mode == "offline" and offline_manifest is None:
+        raise UpstreamSmokeError("--offline-manifest is required in offline mode")
+    if network_mode not in {"auto", "offline"} and offline_manifest is not None:
+        raise UpstreamSmokeError(
+            "--offline-manifest is only accepted in auto or offline mode"
+        )
     if container_engine not in CONTAINER_ENGINES:
         raise UpstreamSmokeError(f"unsupported container engine: {container_engine!r}")
     if run_root.exists():
@@ -97,19 +144,37 @@ def create_upstream_smoke_plan(
         lock = load_workflow_lock(workflow_lock)
     except WorkflowLockError as exc:
         raise UpstreamSmokeError(str(exc)) from exc
+    if offline_manifest is not None and container_engine == "docker":
+        raise UpstreamSmokeError("offline smoke bundles require apptainer or singularity")
+    offline = (
+        _offline_components(offline_manifest, workflow_lock)
+        if offline_manifest is not None
+        else None
+    )
+    selected_mode = "offline" if offline is not None else network_mode
     root = run_root.resolve()
+    workflow_sources = {
+        "rnaseq": (
+            str(offline["rnaseq_workflow"]) if offline else lock.rnaseq.name
+        ),
+        "differential": (
+            str(offline["differential_workflow"]) if offline else lock.differential.name
+        ),
+    }
+    offline_parameters = offline["parameters"] if offline else {}
     stages = [
         {
             "id": "rnaseq",
             "workflow": {"name": lock.rnaseq.name, "revision": lock.rnaseq.revision},
             "test_profile": TEST_PROFILES["rnaseq"],
             "command_argv": _stage_argv(
-                workflow=lock.rnaseq.name,
-                revision=lock.rnaseq.revision,
+                workflow=workflow_sources["rnaseq"],
+                revision=None if offline else lock.rnaseq.revision,
                 profile=TEST_PROFILES["rnaseq"],
                 container_engine=container_engine,
                 root=root,
                 stage="rnaseq",
+                parameters=(offline_parameters.get("rnaseq") if offline else None),
             ),
         },
         {
@@ -120,12 +185,15 @@ def create_upstream_smoke_plan(
             },
             "test_profile": TEST_PROFILES["differential"],
             "command_argv": _stage_argv(
-                workflow=lock.differential.name,
-                revision=lock.differential.revision,
+                workflow=workflow_sources["differential"],
+                revision=None if offline else lock.differential.revision,
                 profile=TEST_PROFILES["differential"],
                 container_engine=container_engine,
                 root=root,
                 stage="differential",
+                parameters=(
+                    offline_parameters.get("differential") if offline else None
+                ),
             ),
         },
     ]
@@ -144,12 +212,24 @@ def create_upstream_smoke_plan(
         "execution": {
             "run_root": str(root),
             "network_mode": network_mode,
+            "selected_network_mode": selected_mode,
             "container_engine": container_engine,
             "proxy_environment_present": [
                 name for name in PROXY_VARIABLES if os.environ.get(name)
             ],
             "proxy_values_recorded": False,
             "resume_required": True,
+            "offline_bundle_verified": offline is not None,
+            "offline_bundle": offline,
+            "required_environment": (
+                {
+                    "NXF_OFFLINE": "true",
+                    "NXF_SINGULARITY_CACHEDIR": offline["container_root"],
+                    "NXF_PLUGINS_DIR": offline["plugin_root"],
+                }
+                if offline
+                else {}
+            ),
         },
         "stages": stages,
         "uses_public_upstream_test_data": True,
@@ -215,6 +295,37 @@ def _read_plan(path: Path) -> tuple[Path, dict[str, object]]:
         "nf_core_tools_version": workflow_lock.runtime.nf_core_tools_version,
     }:
         raise UpstreamSmokeError("upstream smoke runtime pin changed after planning")
+    offline_record = execution.get("offline_bundle")
+    offline: dict[str, object] | None = None
+    if offline_record is not None:
+        if not isinstance(offline_record, dict):
+            raise UpstreamSmokeError("upstream smoke offline bundle record is invalid")
+        manifest_record = offline_record.get("manifest")
+        if not isinstance(manifest_record, dict):
+            raise UpstreamSmokeError("upstream smoke offline manifest control is missing")
+        manifest_path = Path(str(manifest_record.get("path", "")))
+        offline = _offline_components(manifest_path, lock_path)
+        if offline != offline_record:
+            raise UpstreamSmokeError("offline bundle changed after smoke planning")
+        if execution.get("network_mode") not in {"auto", "offline"}:
+            raise UpstreamSmokeError("offline bundle has an incompatible network mode")
+        if execution.get("selected_network_mode") != "offline":
+            raise UpstreamSmokeError("verified offline bundle is not selected")
+        expected_environment = {
+            "NXF_OFFLINE": "true",
+            "NXF_SINGULARITY_CACHEDIR": offline["container_root"],
+            "NXF_PLUGINS_DIR": offline["plugin_root"],
+        }
+    else:
+        if execution.get("network_mode") == "offline":
+            raise UpstreamSmokeError("offline smoke plan has no verified bundle")
+        if execution.get("selected_network_mode") != execution.get("network_mode"):
+            raise UpstreamSmokeError("upstream smoke network selection changed")
+        expected_environment = {}
+    if execution.get("offline_bundle_verified") is not (offline is not None):
+        raise UpstreamSmokeError("upstream smoke offline verification status changed")
+    if execution.get("required_environment") != expected_environment:
+        raise UpstreamSmokeError("upstream smoke required environment changed")
     stages = plan.get("stages")
     if (
         not isinstance(stages, list)
@@ -249,31 +360,25 @@ def _read_plan(path: Path) -> tuple[Path, dict[str, object]]:
             raise UpstreamSmokeError(f"upstream smoke stage {stage_id!r} workflow pin changed")
         if stage.get("test_profile") != TEST_PROFILES[stage_id]:
             raise UpstreamSmokeError(f"upstream smoke stage {stage_id!r} test profile changed")
-        expected_options = {
-            "-log": run_root / stage_id / "execution" / "nextflow.log",
-            "-r": revision,
-            "-profile": (
-                f"{TEST_PROFILES[stage_id]},{execution['container_engine']}"
-            ),
-            "-work-dir": run_root / stage_id / "work",
-            "-with-report": run_root / stage_id / "execution" / "report.html",
-            "-with-trace": run_root / stage_id / "execution" / "trace.tsv",
-            "-with-timeline": run_root / stage_id / "execution" / "timeline.html",
-            "-with-dag": run_root / stage_id / "execution" / "dag.html",
-            "--outdir": run_root / stage_id / "results",
-        }
-        if argv[4] != workflow_name:
-            raise UpstreamSmokeError(f"upstream smoke stage {stage_id!r} command workflow changed")
-        for option, expected in expected_options.items():
-            if argv.count(option) != 1:
-                raise UpstreamSmokeError(
-                    f"upstream smoke stage {stage_id!r} has invalid {option} option"
-                )
-            index = argv.index(option)
-            if index + 1 >= len(argv) or str(argv[index + 1]) != str(expected):
-                raise UpstreamSmokeError(
-                    f"upstream smoke stage {stage_id!r} {option} value changed"
-                )
+        command_workflow = (
+            str(offline[f"{stage_id}_workflow"]) if offline else workflow_name
+        )
+        parameters = (
+            offline["parameters"].get(stage_id) if offline else None
+        )
+        expected_argv = _stage_argv(
+            workflow=command_workflow,
+            revision=None if offline else revision,
+            profile=TEST_PROFILES[stage_id],
+            container_engine=str(execution["container_engine"]),
+            root=run_root,
+            stage=stage_id,
+            parameters=parameters,
+        )
+        if argv != expected_argv:
+            raise UpstreamSmokeError(
+                f"upstream smoke stage {stage_id!r} command changed after planning"
+            )
     return resolved, plan
 
 
@@ -480,6 +585,9 @@ def inspect_upstream_smoke_completion(
     runtime_path = _required_file(
         run_root / "runtime" / "versions.tsv", "runtime-version evidence"
     )
+    network_path = _required_file(
+        run_root / "runtime" / "network_selection.tsv", "network-selection evidence"
+    )
     try:
         with runtime_path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle, delimiter="\t")
@@ -503,6 +611,42 @@ def inspect_upstream_smoke_completion(
         stage="runtime",
         role="versions",
         path=runtime_path,
+        run_root=run_root,
+        progress=progress,
+    )
+    try:
+        with network_path.open("r", encoding="utf-8", newline="") as handle:
+            network_reader = csv.DictReader(handle, delimiter="\t")
+            if network_reader.fieldnames != [
+                "requested_mode",
+                "selected_mode",
+                "offline_bundle_available",
+            ]:
+                raise UpstreamSmokeError("network-selection evidence has invalid columns")
+            network_rows = list(network_reader)
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise UpstreamSmokeError(f"could not read network-selection evidence: {exc}") from exc
+    if len(network_rows) != 1:
+        raise UpstreamSmokeError("network-selection evidence must contain exactly one row")
+    network_row = network_rows[0]
+    requested_mode = str(plan["execution"]["network_mode"])
+    offline_available = bool(plan["execution"]["offline_bundle_verified"])
+    selected_mode = network_row["selected_mode"]
+    allowed_selected = (
+        {"offline"}
+        if offline_available
+        else ({"direct", "proxy"} if requested_mode == "auto" else {requested_mode})
+    )
+    if (
+        network_row["requested_mode"] != requested_mode
+        or network_row["offline_bundle_available"] != str(offline_available).lower()
+        or selected_mode not in allowed_selected
+    ):
+        raise UpstreamSmokeError("network-selection evidence conflicts with the run plan")
+    network_artifact = _hash_artifact(
+        stage="runtime",
+        role="network_selection",
+        path=network_path,
         run_root=run_root,
         progress=progress,
     )
@@ -560,6 +704,10 @@ def inspect_upstream_smoke_completion(
             "container_engine": observed["container_engine"],
             "container_runtime": observed["container_runtime"],
             "artifact": runtime_artifact,
+            "requested_network_mode": requested_mode,
+            "selected_network_mode": selected_mode,
+            "offline_bundle_available": offline_available,
+            "network_artifact": network_artifact,
         },
         "execution": plan["execution"],
         "stages": stage_records,
@@ -652,6 +800,72 @@ def create_upstream_smoke_launcher(
     if purge_modules:
         lines.append("module purge")
     lines.extend(f"module load {shlex.quote(module)}" for module in modules)
+    requested_network = str(plan["execution"]["network_mode"])
+    planned_selection = str(plan["execution"]["selected_network_mode"])
+    offline = plan["execution"].get("offline_bundle")
+    lines.extend(
+        [
+            "",
+            f"requested_network={shlex.quote(requested_network)}",
+            f"selected_network={shlex.quote(planned_selection)}",
+        ]
+    )
+    if offline is not None:
+        for name, value in plan["execution"]["required_environment"].items():
+            lines.append(f"export {name}={shlex.quote(str(value))}")
+        lines.append(f"cd {shlex.quote(str(offline['test_data_root']))}")
+    else:
+        direct_unsets = " ".join(
+            f"-u {name}"
+            for name in (*PROXY_VARIABLES, "ALL_PROXY", "all_proxy")
+        )
+        lines.extend(
+            [
+                "probe_endpoint() {",
+                "    curl --silent --show-error --connect-timeout 10 --max-time 20 -o /dev/null \"$1\"",
+                "}",
+                "probe_direct() {",
+                f"    env {direct_unsets} bash -c 'probe_endpoint() {{ curl --silent --show-error --connect-timeout 10 --max-time 20 -o /dev/null \"$1\"; }}; probe_endpoint https://api.github.com/ && probe_endpoint https://quay.io/v2/' bash",
+                "}",
+                "proxy_present=false",
+                "if [[ -n \"${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}${http_proxy:-}\" ]]; then proxy_present=true; fi",
+                "if [[ \"$requested_network\" == auto ]]; then",
+                "    if probe_direct; then",
+                "        selected_network=direct",
+                "    elif [[ \"$proxy_present\" == true ]] && probe_endpoint https://api.github.com/ && probe_endpoint https://quay.io/v2/; then",
+                "        selected_network=proxy",
+                "    else",
+                "        echo '[upstream-smoke] no verified offline bundle, direct HTTPS access, or working configured proxy' >&2",
+                "        exit 69",
+                "    fi",
+                "elif [[ \"$requested_network\" == direct ]]; then",
+                "    if ! probe_direct; then",
+                "        echo '[upstream-smoke] direct HTTPS preflight failed before Nextflow' >&2",
+                "        exit 69",
+                "    fi",
+                "elif [[ \"$requested_network\" == proxy ]]; then",
+                "    if [[ \"$proxy_present\" != true ]]; then",
+                "        echo '[upstream-smoke] proxy mode requires HTTPS_PROXY/https_proxy or HTTP_PROXY/http_proxy' >&2",
+                "        exit 69",
+                "    fi",
+                "    if ! probe_endpoint https://api.github.com/ || ! probe_endpoint https://quay.io/v2/; then",
+                "        echo '[upstream-smoke] proxy HTTPS preflight failed before Nextflow' >&2",
+                "        exit 69",
+                "    fi",
+                "fi",
+                "if [[ \"$selected_network\" == direct ]]; then",
+                "    unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy NO_PROXY no_proxy ALL_PROXY all_proxy",
+                "fi",
+            ]
+        )
+    network_evidence = run_root / "runtime" / "network_selection.tsv"
+    lines.extend(
+        [
+            f"printf 'requested_mode\\tselected_mode\\toffline_bundle_available\\n%s\\t%s\\t%s\\n' \"$requested_network\" \"$selected_network\" {str(offline is not None).lower()} > {shlex.quote(str(network_evidence))}",
+            f"chmod 600 {shlex.quote(str(network_evidence))}",
+            "echo \"[upstream-smoke] network selected requested=${requested_network} selected=${selected_network}\" >&2",
+        ]
+    )
     lines.extend(
         [
             "",
@@ -681,26 +895,24 @@ def create_upstream_smoke_launcher(
             "    local label=\"$1\"",
             "    local ordinal=\"$2\"",
             "    shift 2",
-            "    local started child ticker status",
+            "    local started child status tick",
             "    started=$(date +%s)",
             "    echo \"[upstream-smoke] stage=${ordinal}/2 name=${label} starting\" >&2",
             "    \"$@\" &",
             "    child=$!",
-            "    (",
-            "        while kill -0 \"$child\" 2>/dev/null; do",
-            "            sleep 60",
-            "            if kill -0 \"$child\" 2>/dev/null; then",
-            "                echo \"[upstream-smoke] stage=${ordinal}/2 name=${label} running elapsed_seconds=$(($(date +%s)-started))\" >&2",
-            "            fi",
+            "    while kill -0 \"$child\" 2>/dev/null; do",
+            "        for ((tick=0; tick<60; tick++)); do",
+            "            kill -0 \"$child\" 2>/dev/null || break",
+            "            sleep 1",
             "        done",
-            "    ) &",
-            "    ticker=$!",
+            "        if kill -0 \"$child\" 2>/dev/null; then",
+            "            echo \"[upstream-smoke] stage=${ordinal}/2 name=${label} running elapsed_seconds=$(($(date +%s)-started))\" >&2",
+            "        fi",
+            "    done",
             "    set +e",
             "    wait \"$child\"",
             "    status=$?",
             "    set -e",
-            "    kill \"$ticker\" 2>/dev/null || true",
-            "    wait \"$ticker\" 2>/dev/null || true",
             "    if (( status != 0 )); then",
             "        echo \"[upstream-smoke] stage=${ordinal}/2 name=${label} failed exit=${status}\" >&2",
             "        return \"$status\"",
