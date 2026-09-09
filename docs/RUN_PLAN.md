@@ -72,9 +72,13 @@ The rendered preview is informational and shell-quoted with `shlex.join`.
 ## Proxy and offline status
 
 Only standard proxy environment-variable names are recorded; their values are
-never serialized. M2 now requires `--offline-manifest` whenever
-`--network-mode offline` is selected. Planning verifies every bundled artifact,
-switches the command from the remote workflow name to the verified local
-workflow directory, and records `NXF_OFFLINE=true`. See
+never serialized. M2 requires `--offline-manifest` whenever
+`--network-mode offline` is selected. `--network-mode auto` optionally accepts
+the same manifest and binds an offline fallback alongside the pinned online
+command. The SLURM launcher prefers a verified offline bundle when supplied;
+without one it resolves direct access and then an HTTPS proxy before Nextflow
+starts. Planning verifies every bundled artifact;
+offline execution switches from the remote workflow name to the verified local
+workflow directory and records `NXF_OFFLINE=true`. See
 [`OFFLINE_STAGING.md`](OFFLINE_STAGING.md) for the complete staging and
 verification sequence.

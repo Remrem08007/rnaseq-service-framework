@@ -163,6 +163,30 @@ Nextflow documents that `NXF_OFFLINE=true` blocks remote project updates and
 plugin downloads; therefore plugin versions in staged workflows must also be
 explicit.
 
+For one plan that can be used on connected and disconnected clusters, select
+automatic resolution instead:
+
+```bash
+rnaseq-service-plan \
+  --samplesheet private/intake/samplesheet.csv \
+  --input-manifest private/inputs/study-001.fastq-manifest.json \
+  --genome GRCh38 \
+  --design private/intake/design.csv \
+  --contrasts private/intake/contrasts.csv \
+  --output private/plans/study-001-auto.json \
+  --outdir results/study-001 \
+  --workdir work/study-001 \
+  --network-mode auto \
+  --offline-manifest /path/to/offline-bundle/offline_bundle.manifest.json
+```
+
+The plan binds both the pinned online command and the verified offline command.
+On SLURM, the controller selects the verified local bundle immediately when it
+is supplied. Without a bundle, it probes direct HTTPS first and then an
+explicitly supplied HTTPS proxy. Bundle integrity is checked again when the
+launcher is prepared. The scientific workflow is started only after one mode
+has been selected.
+
 ## Security boundary
 
 - Never commit a staging plan, receipt, bundle, proxy configuration, or client

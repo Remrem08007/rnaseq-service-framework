@@ -50,7 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--outdir", type=Path, required=True)
     plan.add_argument("--workdir", type=Path, required=True)
     plan.add_argument("--study-name", required=True)
-    plan.add_argument("--network-mode", choices=("direct", "proxy", "offline"), required=True)
+    plan.add_argument(
+        "--network-mode", choices=("auto", "direct", "proxy", "offline"), required=True
+    )
     plan.add_argument(
         "--container-engine", choices=("apptainer", "docker", "singularity"), default="apptainer"
     )

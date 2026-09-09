@@ -10,9 +10,10 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .bundle import BundleError, verify_bundle
 from .hpc_config import HPCConfigError, load_hpc_settings, render_nextflow_config
 from .inputs import InputManifestError, verify_input_manifest
-from .plan import sha256_file
+from .plan import NETWORK_MODES, PROXY_VARIABLES, sha256_file
 
 
 JOB_ID = re.compile(r"^(\d+)(?:;[A-Za-z0-9_.-]+)?$")
@@ -35,6 +36,8 @@ def _read_plan(path: Path) -> dict[str, object]:
     execution = payload.get("execution")
     if not isinstance(execution, dict) or execution.get("executor") != "slurm":
         raise HPCRunError("run plan was not created for the slurm executor")
+    if execution.get("network_mode") not in NETWORK_MODES:
+        raise HPCRunError("run plan has an unsupported network mode")
     argv = payload.get("command_argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(v, str) for v in argv):
         raise HPCRunError("run plan command_argv is invalid")
@@ -64,6 +67,33 @@ def _read_plan(path: Path) -> dict[str, object]:
         raise HPCRunError(
             "run plan lacks required workflow controls: " + ", ".join(missing_controls)
         )
+    fallback = execution.get("offline_fallback")
+    if (
+        execution.get("network_mode") == "auto"
+        and "offline_manifest" in controls
+        and fallback is None
+    ):
+        raise HPCRunError("auto plan with an offline manifest has no offline fallback")
+    if fallback is not None:
+        if execution.get("network_mode") != "auto" or "offline_manifest" not in controls:
+            raise HPCRunError("offline fallback is only valid for an auto plan with a manifest")
+        if not isinstance(fallback, dict):
+            raise HPCRunError("offline fallback is invalid")
+        fallback_argv = fallback.get("command_argv")
+        fallback_environment = fallback.get("required_environment")
+        if (
+            not isinstance(fallback_argv, list)
+            or fallback_argv[0:2] != ["nextflow", "run"]
+            or "-resume" not in fallback_argv
+            or not all(isinstance(value, str) for value in fallback_argv)
+        ):
+            raise HPCRunError("offline fallback command is invalid")
+        if (
+            not isinstance(fallback_environment, dict)
+            or fallback_environment.get("NXF_OFFLINE") != "true"
+            or not set(fallback_environment).issubset(SAFE_ENVIRONMENT)
+        ):
+            raise HPCRunError("offline fallback environment is invalid")
     reference = payload.get("reference")
     if (
         not isinstance(reference, dict)
@@ -79,6 +109,14 @@ def _read_plan(path: Path) -> dict[str, object]:
             raise HPCRunError(f"control file size changed after planning: {label}")
         if sha256_file(control_path) != record.get("sha256"):
             raise HPCRunError(f"control file checksum changed after planning: {label}")
+    if "offline_manifest" in controls:
+        try:
+            verify_bundle(
+                Path(str(controls["offline_manifest"]["path"])),
+                expected_workflow_lock=Path(str(controls["workflow_lock"]["path"])),
+            )
+        except (BundleError, OSError) as exc:
+            raise HPCRunError(f"offline bundle verification failed: {exc}") from exc
     if workflow_name == "nf-core/rnaseq":
         input_record = controls["input_manifest"]
         try:
@@ -149,6 +187,10 @@ def prepare_launcher(
         if required_environment.get("NXF_OFFLINE") != "true":
             raise HPCRunError("offline run plan does not enforce NXF_OFFLINE=true")
 
+    network_mode = str(execution["network_mode"])
+    fallback = execution.get("offline_fallback")
+    offline_available = "offline_manifest" in controls
+
     output_resolved = output.resolve()
     log_dir = output_resolved.parent / "logs"
     cluster = settings.cluster
@@ -176,15 +218,89 @@ def prepare_launcher(
         if not isinstance(value, str) or "\x00" in value or "\n" in value:
             raise HPCRunError(f"unsafe environment value for {name}")
         lines.append(f"export {name}={shlex.quote(value)}")
+    lines.append(f"cd {shlex.quote(str(output_resolved.parent))}")
+    proxy_unset = " ".join(PROXY_VARIABLES)
+    if network_mode == "direct":
+        lines.extend(
+            [
+                f"unset {proxy_unset}",
+                "unset NXF_OFFLINE",
+                "selected_network=direct",
+            ]
+        )
+    elif network_mode == "proxy":
+        lines.extend(
+            [
+                "if [[ -z \"${HTTPS_PROXY:-${https_proxy:-}}\" ]]; then",
+                "    echo '[controller] proxy mode requires HTTPS_PROXY or https_proxy' >&2",
+                "    exit 69",
+                "fi",
+                "selected_network=proxy",
+            ]
+        )
+    elif network_mode == "offline":
+        lines.append("selected_network=offline")
+    elif offline_available:
+        fallback_environment = fallback["required_environment"]
+        for name, value in sorted(fallback_environment.items()):
+            if not isinstance(value, str) or "\x00" in value or "\n" in value:
+                raise HPCRunError(f"unsafe offline fallback value for {name}")
+            lines.append(f"export {name}={shlex.quote(value)}")
+        lines.append("selected_network=offline")
+    else:
+        lines.extend(
+            [
+                "probe_endpoint() {",
+                "    local access_mode=\"$1\" url=\"$2\" status",
+                "    command -v curl >/dev/null 2>&1 || return 1",
+                "    if [[ \"$access_mode\" == direct ]]; then",
+                f"        status=$(env {''.join(f'-u {name} ' for name in PROXY_VARIABLES)}curl --noproxy '*' -L -sS -I --max-time 10 -o /dev/null -w '%{{http_code}}' \"$url\") || return 1",
+                "    else",
+                "        status=$(curl -L -sS -I --max-time 10 -o /dev/null -w '%{http_code}' \"$url\") || return 1",
+                "    fi",
+                "    [[ \"$status\" =~ ^[1-5][0-9][0-9]$ ]]",
+                "}",
+                "online_ready() {",
+                "    probe_endpoint \"$1\" https://api.github.com/ && \\",
+                "    probe_endpoint \"$1\" https://quay.io/v2/",
+                "}",
+                "if online_ready direct; then",
+                f"    unset {proxy_unset}",
+                "    unset NXF_OFFLINE",
+                "    selected_network=direct",
+                "elif [[ -n \"${HTTPS_PROXY:-${https_proxy:-}}\" ]] && online_ready proxy; then",
+                "    unset NXF_OFFLINE",
+                "    selected_network=proxy",
+                "else",
+                "    echo '[controller] no verified offline bundle, direct access, or HTTPS proxy' >&2",
+                "    exit 69",
+            ]
+        )
+        lines.append("fi")
+
+    evidence = Path(str(execution["outdir"])) / "execution" / "network_selection.tsv"
     lines.extend(
         [
-            f"cd {shlex.quote(str(output_resolved.parent))}",
+            f"mkdir -p {shlex.quote(str(evidence.parent))}",
+            f"printf 'requested_mode\\tselected_mode\\toffline_bundle_available\\n%s\\t%s\\t%s\\n' {shlex.quote(network_mode)} \"$selected_network\" {str(offline_available).lower()} > {shlex.quote(str(evidence))}",
+            f"chmod 600 {shlex.quote(str(evidence))}",
+            "echo \"[controller] network mode requested=" + network_mode + " selected=${selected_network}\" >&2",
             "echo '[controller] starting Nextflow' >&2",
-            shlex.join(plan["command_argv"]),
-            "echo '[controller] Nextflow completed' >&2",
-            "",
         ]
     )
+    if network_mode == "auto" and isinstance(fallback, dict):
+        lines.extend(
+            [
+                "if [[ \"$selected_network\" == offline ]]; then",
+                "    " + shlex.join(fallback["command_argv"]),
+                "else",
+                "    " + shlex.join(plan["command_argv"]),
+                "fi",
+            ]
+        )
+    else:
+        lines.append(shlex.join(plan["command_argv"]))
+    lines.extend(["echo '[controller] Nextflow completed' >&2", ""])
     rendered = "\n".join(lines)
     output_resolved.parent.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)

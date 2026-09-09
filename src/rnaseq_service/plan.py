@@ -17,7 +17,7 @@ from .preflight import PreflightReport, run_preflight
 from .workflow_lock import WorkflowLockError, load_workflow_lock
 
 
-NETWORK_MODES = {"direct", "proxy", "offline"}
+NETWORK_MODES = {"auto", "direct", "proxy", "offline"}
 CONTAINER_ENGINES = {"apptainer", "docker", "singularity"}
 EXECUTORS = {"local", "slurm"}
 PROXY_VARIABLES = (
@@ -137,9 +137,9 @@ def create_rnaseq_plan(
         raise PlanError("--infrastructure-config is only accepted with the slurm executor")
     if network_mode == "offline" and offline_manifest is None:
         raise PlanError("--offline-manifest is required in offline mode")
-    if network_mode != "offline" and offline_manifest is not None:
-        raise PlanError("--offline-manifest is only accepted in offline mode")
-    if network_mode == "offline" and container_engine == "docker":
+    if network_mode not in {"auto", "offline"} and offline_manifest is not None:
+        raise PlanError("--offline-manifest is only accepted in auto or offline mode")
+    if offline_manifest is not None and container_engine == "docker":
         raise PlanError("offline bundles currently support apptainer/singularity only")
     if genome is not None and REFERENCE_KEY.fullmatch(genome) is None:
         raise PlanError(f"invalid iGenomes reference key: {genome!r}")
@@ -192,12 +192,15 @@ def create_rnaseq_plan(
     )
     workflow_source = lock.rnaseq.name
     workflow_revision: str | None = lock.rnaseq.revision
+    offline_workflow_source: str | None = None
     if bundle is not None and offline_manifest_resolved is not None:
         components = bundle["components"]
-        workflow_source = str(
+        offline_workflow_source = str(
             (offline_manifest_resolved.parent / components["rnaseq_workflow"]).resolve()
         )
-        workflow_revision = None
+        if network_mode == "offline":
+            workflow_source = offline_workflow_source
+            workflow_revision = None
     argv = build_rnaseq_argv(
         workflow_name=workflow_source,
         revision=workflow_revision,
@@ -208,6 +211,18 @@ def create_rnaseq_plan(
         infrastructure_config=infra_resolved,
         genome=genome,
     )
+    offline_argv: list[str] | None = None
+    if offline_workflow_source is not None:
+        offline_argv = build_rnaseq_argv(
+            workflow_name=offline_workflow_source,
+            revision=None,
+            samplesheet=samplesheet_resolved,
+            outdir=outdir_resolved,
+            workdir=workdir_resolved,
+            container_engine=container_engine,
+            infrastructure_config=infra_resolved,
+            genome=genome,
+        )
 
     controls = {
         "samplesheet": _control_file(samplesheet),
@@ -223,9 +238,10 @@ def create_rnaseq_plan(
         controls["input_manifest"] = _control_file(input_manifest_resolved)
 
     required_environment: dict[str, str] = {}
+    offline_environment: dict[str, str] = {}
     if bundle is not None and offline_manifest_resolved is not None:
         components = bundle["components"]
-        required_environment = {
+        offline_environment = {
             "NXF_OFFLINE": "true",
             "NXF_SINGULARITY_CACHEDIR": str(
                 (
@@ -238,6 +254,8 @@ def create_rnaseq_plan(
                 ).resolve()
             ),
         }
+        if network_mode == "offline":
+            required_environment = offline_environment
 
     plan: dict[str, object] = {
         "schema_version": 1,
@@ -262,6 +280,14 @@ def create_rnaseq_plan(
             "offline_bundle_verified": bundle is not None,
             "offline_bundle": bundle,
             "required_environment": required_environment,
+            "offline_fallback": (
+                {
+                    "command_argv": offline_argv,
+                    "required_environment": offline_environment,
+                }
+                if network_mode == "auto" and offline_argv is not None
+                else None
+            ),
         },
         "command_argv": argv,
         "command_preview": shlex.join(argv),

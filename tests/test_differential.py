@@ -14,6 +14,7 @@ from rnaseq_service.differential import (
 )
 from rnaseq_service.differential_cli import main as differential_main
 from rnaseq_service.qc import evaluate_qc, finalize_qc
+from test_plan import make_offline_manifest
 from test_qc import qc_fixture, write_reviewed_decisions
 
 
@@ -163,6 +164,25 @@ def test_plan_subsets_accepted_inputs_and_pins_workflow(tmp_path: Path) -> None:
             "blocking": "",
         }
     ]
+
+
+def test_auto_plan_records_verified_differential_offline_fallback(
+    tmp_path: Path,
+) -> None:
+    kwargs = plan_kwargs(tmp_path)
+    manifest = make_offline_manifest(tmp_path)
+    kwargs.update(network_mode="auto", offline_manifest=manifest)
+
+    plan = create_differential_plan(**kwargs)
+
+    assert plan["command_argv"][2] == "nf-core/differentialabundance"
+    fallback = plan["execution"]["offline_fallback"]
+    assert fallback["command_argv"][2].endswith(
+        "/pipelines/differential/workflow"
+    )
+    assert "-r" not in fallback["command_argv"]
+    assert fallback["required_environment"]["NXF_OFFLINE"] == "true"
+    assert "offline_manifest" in plan["control_files"]
 
 
 def test_changed_source_matrix_is_rejected(tmp_path: Path) -> None:

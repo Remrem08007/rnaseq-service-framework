@@ -418,9 +418,11 @@ def create_differential_plan(
         raise DifferentialHandoffError("--infrastructure-config is only accepted with slurm")
     if network_mode == "offline" and offline_manifest is None:
         raise DifferentialHandoffError("--offline-manifest is required in offline mode")
-    if network_mode != "offline" and offline_manifest is not None:
-        raise DifferentialHandoffError("--offline-manifest is only accepted in offline mode")
-    if network_mode == "offline" and container_engine == "docker":
+    if network_mode not in {"auto", "offline"} and offline_manifest is not None:
+        raise DifferentialHandoffError(
+            "--offline-manifest is only accepted in auto or offline mode"
+        )
+    if offline_manifest is not None and container_engine == "docker":
         raise DifferentialHandoffError("offline bundles support apptainer/singularity only")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise DifferentialHandoffError("seed must be a non-negative integer")
@@ -452,6 +454,8 @@ def create_differential_plan(
     workflow_name = workflow_lock.differential.name
     workflow_revision: str | None = workflow_lock.differential.revision
     required_environment: dict[str, str] = {}
+    offline_environment: dict[str, str] = {}
+    offline_workflow_name: str | None = None
     offline_resolved: Path | None = None
     if offline_manifest is not None:
         offline_resolved = offline_manifest.resolve(strict=True)
@@ -460,9 +464,10 @@ def create_differential_plan(
         except (BundleError, OSError) as exc:
             raise DifferentialHandoffError(f"offline bundle verification failed: {exc}") from exc
         components = bundle["components"]
-        workflow_name = str((offline_resolved.parent / components["differential_workflow"]).resolve())
-        workflow_revision = None
-        required_environment = {
+        offline_workflow_name = str(
+            (offline_resolved.parent / components["differential_workflow"]).resolve()
+        )
+        offline_environment = {
             "NXF_OFFLINE": "true",
             "NXF_SINGULARITY_CACHEDIR": str(
                 (offline_resolved.parent / components["container_root"]).resolve()
@@ -471,6 +476,10 @@ def create_differential_plan(
                 (offline_resolved.parent / components["plugin_root"]).resolve()
             ),
         }
+        if network_mode == "offline":
+            workflow_name = offline_workflow_name
+            workflow_revision = None
+            required_environment = offline_environment
     samples = list(acceptance["accepted_samples"])
     handoff_dir.mkdir(parents=True, mode=0o700)
     observations = handoff_dir / "observations.accepted.tsv"
@@ -520,6 +529,24 @@ def create_differential_plan(
             study_name=study_name,
             seed=seed,
         )
+        offline_argv: list[str] | None = None
+        if offline_workflow_name is not None:
+            offline_argv = _build_argv(
+                workflow_name=offline_workflow_name,
+                revision=None,
+                container_engine=container_engine,
+                infrastructure_config=infrastructure_resolved,
+                workdir=workdir_resolved,
+                execution_root=execution_root,
+                pipeline_outdir=pipeline_outdir,
+                observations=observations.resolve(),
+                counts=counts.resolve(),
+                lengths=lengths.resolve(),
+                contrasts=converted_contrasts.resolve(),
+                genome=str(source_plan["reference"]["genome"]),
+                study_name=study_name,
+                seed=seed,
+            )
         controls = {
             "qc_acceptance": _control_record(acceptance_path),
             "workflow_lock": _control_record(workflow_lock_path),
@@ -567,6 +594,14 @@ def create_differential_plan(
                 ],
                 "proxy_values_recorded": False,
                 "required_environment": required_environment,
+                "offline_fallback": (
+                    {
+                        "command_argv": offline_argv,
+                        "required_environment": offline_environment,
+                    }
+                    if network_mode == "auto" and offline_argv is not None
+                    else None
+                ),
             },
             "command_argv": argv,
             "command_preview": shlex.join(argv),
