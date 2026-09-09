@@ -104,7 +104,34 @@ under `private/offline-bundle/plugins` through `NXF_PLUGINS_DIR`. The completed
 receipt records the exact downloaded workflow directories discovered from
 `main.nf` and `nextflow.config`.
 
-## 4. Seal the completed bundle
+## 4. Stage the official upstream smoke inputs (optional)
+
+This extra component is required only when the real upstream smoke test must run
+on compute nodes with no internet access. Run it on the same connected login or
+transfer host before sealing:
+
+```bash
+rnaseq-service-upstream-data stage \
+  --output-root "$PWD/private/offline-bundle/upstream-test-data" \
+  --network-mode auto \
+  --timeout-seconds 60
+```
+
+The command stages 30 pinned public files used by the two locked nf-core test
+profiles and creates two local-only control files. It tries direct HTTPS first,
+then a configured standard proxy. Every download has byte progress; GitHub
+branch references used by the upstream profiles are replaced with resolved
+commit IDs. The generated RNA-seq samplesheet and BBsplit list contain portable
+bundle-relative paths rather than staging-host paths or URLs.
+
+Verify this component independently with:
+
+```bash
+rnaseq-service-upstream-data verify \
+  --root "$PWD/private/offline-bundle/upstream-test-data"
+```
+
+## 5. Seal the completed bundle
 
 Use the two `workflow_dir` values from the receipt:
 
@@ -115,16 +142,18 @@ rnaseq-service-bundle seal \
   --rnaseq-workflow /absolute/path/from/rnaseq/receipt \
   --differential-workflow /absolute/path/from/differential/receipt \
   --container-root "$PWD/private/offline-bundle/containers" \
-  --plugin-root "$PWD/private/offline-bundle/plugins"
+  --plugin-root "$PWD/private/offline-bundle/plugins" \
+  --upstream-test-data-root "$PWD/private/offline-bundle/upstream-test-data"
 ```
 
 Sealing shows byte-level progress while hashing large images and writes
 `offline_bundle.manifest.json` with mode `0600`. It refuses symbolic links,
 missing workflow entry points, an empty image cache, or an existing manifest.
 The manifest declares that staging artifacts contain neither client data nor
-secrets.
+secrets. Omit `--upstream-test-data-root` for a production-only software bundle;
+include it when the official smoke profiles must also run offline.
 
-## 5. Transfer and verify offline
+## 6. Transfer and verify offline
 
 Transfer the entire directory without adding or removing files. On the target
 cluster:
@@ -139,7 +168,7 @@ Verification checks exact file membership, every byte count and SHA-256 digest,
 the component layout, and all workflow/runtime pins. Missing, unexpected, or
 modified files fail verification.
 
-## 6. Create an offline analysis plan
+## 7. Create an offline analysis plan
 
 ```bash
 rnaseq-service-plan \
@@ -191,8 +220,9 @@ has been selected.
 
 - Never commit a staging plan, receipt, bundle, proxy configuration, or client
   path.
-- Do not place FASTQs, sample metadata, reference genomes, or results inside a
-  software bundle.
+- Do not place client FASTQs, client metadata, production reference genomes, or
+  results inside a software bundle. The optional upstream-smoke component is a
+  narrowly scoped exception containing only public nf-core test fixtures.
 - A successful checksum verification proves bundle integrity, not scientific
   validity or QC acceptance.
 - If staging fails after the receipt is reserved, inspect the cause and create

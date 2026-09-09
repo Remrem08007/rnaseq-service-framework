@@ -157,7 +157,10 @@ The separate real-upstream smoke path plans and launches the official public
 test profiles for both pinned workflows on SLURM, emits one-minute heartbeats,
 and requires successful traces plus MultiQC, Salmon, DESeq2, volcano, report,
 and GSEA artifacts before writing an immutable checksum receipt. No client data
-is used. See [`docs/SYNTHETIC_VALIDATION.md`](docs/SYNTHETIC_VALIDATION.md) and
+is used. Its optional smoke-data staging command downloads and checksum-binds
+all public test inputs so network-isolated compute nodes can run from a verified
+bundle; automatic mode prefers that bundle before trying direct HTTPS and a
+configured proxy. See [`docs/SYNTHETIC_VALIDATION.md`](docs/SYNTHETIC_VALIDATION.md) and
 [`docs/UPSTREAM_SMOKE.md`](docs/UPSTREAM_SMOKE.md).
 
 ## Documentation

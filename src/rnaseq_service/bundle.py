@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
+from .upstream_data import UpstreamDataError, verify_upstream_test_data
 from .workflow_lock import WorkflowLockError, load_workflow_lock
 
 
@@ -83,6 +84,7 @@ def _validate_components(
     differential_workflow: Path,
     container_root: Path,
     plugin_root: Path,
+    upstream_test_data_root: Path | None = None,
 ) -> dict[str, str]:
     rnaseq = _inside(root, rnaseq_workflow, "RNA-seq workflow directory")
     differential = _inside(
@@ -107,12 +109,22 @@ def _validate_components(
         raise BundleError("container directory has no .img or .sif images")
     if not plugins.is_dir() or not any(path.is_file() for path in plugins.rglob("*")):
         raise BundleError("Nextflow plugin directory contains no plugin artifacts")
-    return {
+    components = {
         "rnaseq_workflow": rnaseq.relative_to(root).as_posix(),
         "differential_workflow": differential.relative_to(root).as_posix(),
         "container_root": containers.relative_to(root).as_posix(),
         "plugin_root": plugins.relative_to(root).as_posix(),
     }
+    if upstream_test_data_root is not None:
+        test_data = _inside(root, upstream_test_data_root, "upstream test-data directory")
+        if not test_data.is_dir():
+            raise BundleError("upstream test-data component is not a directory")
+        try:
+            verify_upstream_test_data(test_data)
+        except (UpstreamDataError, OSError, UnicodeError) as exc:
+            raise BundleError(f"upstream test-data verification failed: {exc}") from exc
+        components["upstream_test_data_root"] = test_data.relative_to(root).as_posix()
+    return components
 
 
 def seal_bundle(
@@ -123,6 +135,7 @@ def seal_bundle(
     differential_workflow: Path,
     container_root: Path,
     plugin_root: Path,
+    upstream_test_data_root: Path | None = None,
     manifest: Path | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict[str, object]:
@@ -142,6 +155,7 @@ def seal_bundle(
         differential_workflow=differential_workflow,
         container_root=container_root,
         plugin_root=plugin_root,
+        upstream_test_data_root=upstream_test_data_root,
     )
     try:
         lock = load_workflow_lock(workflow_lock)
@@ -271,12 +285,16 @@ def verify_bundle(
     if not isinstance(components, dict):
         raise BundleError("bundle components are missing")
     try:
+        test_data_component = components.get("upstream_test_data_root")
         checked_components = _validate_components(
             root,
             rnaseq_workflow=root / str(components["rnaseq_workflow"]),
             differential_workflow=root / str(components["differential_workflow"]),
             container_root=root / str(components["container_root"]),
             plugin_root=root / str(components["plugin_root"]),
+            upstream_test_data_root=(
+                root / test_data_component if test_data_component is not None else None
+            ),
         )
     except KeyError as exc:
         raise BundleError(f"bundle component is missing: {exc.args[0]}") from exc

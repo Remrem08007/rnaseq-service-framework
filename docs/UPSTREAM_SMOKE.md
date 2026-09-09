@@ -85,8 +85,14 @@ from `prepare` and keep the Apptainer module.
 
 If the site requires an outbound proxy, configure it in the submission shell.
 The framework records only which proxy environment-variable names are present;
-it never records their values. Use `proxy` rather than `direct` in the planning
-command below.
+it never records their values. Automatic mode tries direct HTTPS and then the
+configured proxy when no offline bundle is supplied.
+
+For Narval or another cluster whose compute nodes cannot reach the internet,
+first create and transfer the smoke-capable bundle described in
+[`OFFLINE_STAGING.md`](OFFLINE_STAGING.md). The bundle must include the optional
+`upstream-test-data` component; a software-only bundle is deliberately rejected
+for an offline smoke run.
 
 ## 3. Create a unique non-executing plan
 
@@ -105,12 +111,22 @@ rnaseq-service-upstream-smoke plan \
   --workflow-lock config/workflows.toml \
   --output "$SMOKE_PRIVATE/run-plan.json" \
   --run-root "$SMOKE_RUN" \
-  --network-mode direct \
+  --network-mode auto \
+  --offline-manifest /shared/path/offline-bundle/offline_bundle.manifest.json \
   --container-engine apptainer
 ```
 
 Planning does not run Nextflow, download data, or submit a job. It checksum-binds
-the workflow lock and records shell-safe argument arrays for both stages.
+the workflow lock and records shell-safe argument arrays for both stages. When a
+verified bundle is supplied, `auto` immediately selects it: the commands use the
+local workflows and local public inputs, omit remote `-r` lookups, set
+`NXF_OFFLINE=true`, and do not call `curl`. Bundle integrity is checked again
+when the launcher is prepared.
+
+If no bundle is available on a connected cluster, omit `--offline-manifest`.
+The generated launcher probes direct GitHub/Quay access, then a configured proxy,
+and exits before Nextflow if neither works. Explicit `direct`, `proxy`, and
+`offline` modes remain available; `offline` requires the manifest.
 
 ## 4. Prepare and review the SLURM launcher
 
@@ -132,7 +148,8 @@ bash -n "$SMOKE_PRIVATE/launch/smoke.sbatch"
 
 Preparation creates a mode-`0700` script but does not call `sbatch`. The two
 stages run sequentially and both use `-resume`. A one-minute heartbeat identifies
-the active stage and elapsed time.
+the active stage and elapsed time. The selected route is recorded in
+`runtime/network_selection.tsv` without recording proxy values.
 
 ## 5. Submit exactly once
 

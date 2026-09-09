@@ -45,7 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--workflow-lock", type=Path, required=True)
     plan.add_argument("--output", type=Path, required=True)
     plan.add_argument("--run-root", type=Path, required=True)
-    plan.add_argument("--network-mode", choices=("direct", "proxy"), required=True)
+    plan.add_argument(
+        "--network-mode",
+        choices=("auto", "direct", "proxy", "offline"),
+        default="auto",
+    )
+    plan.add_argument("--offline-manifest", type=Path)
     plan.add_argument(
         "--container-engine",
         choices=("apptainer", "docker", "singularity"),
@@ -80,10 +85,18 @@ def main(argv: list[str] | None = None) -> int:
                 run_root=args.run_root,
                 network_mode=args.network_mode,
                 container_engine=args.container_engine,
+                offline_manifest=args.offline_manifest,
             )
             summary = {
                 "status": result["stage"],
                 "stages": [stage["id"] for stage in result["stages"]],
+                "requested_network_mode": result["execution"]["network_mode"],
+                "selected_network_mode": result["execution"][
+                    "selected_network_mode"
+                ],
+                "offline_bundle_verified": result["execution"][
+                    "offline_bundle_verified"
+                ],
                 "uses_public_upstream_test_data": result["uses_public_upstream_test_data"],
                 "scientific_execution_expected": result["scientific_execution_expected"],
             }
