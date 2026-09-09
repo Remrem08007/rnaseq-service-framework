@@ -10,6 +10,10 @@ import pytest
 from rnaseq_service.preflight import run_preflight
 from rnaseq_service.synthetic import PAIR_COUNTS, SyntheticStudyError, create_synthetic_study
 from rnaseq_service.synthetic_cli import main as synthetic_main
+from rnaseq_service.synthetic_e2e import SyntheticContractError, run_contract_validation
+
+
+ROOT = Path(__file__).parents[1]
 
 
 def tree_hashes(root: Path) -> dict[str, str]:
@@ -79,8 +83,53 @@ def test_synthetic_study_is_non_overwriting(tmp_path: Path) -> None:
 def test_synthetic_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = tmp_path / "study"
 
-    assert synthetic_main(["--output-dir", str(root), "--quiet"]) == 0
+    assert synthetic_main(["create", "--output-dir", str(root), "--quiet"]) == 0
     summary = json.loads(capsys.readouterr().out)
     assert summary["n_samples"] == 6
     assert summary["n_fastq_files"] == 12
     assert Path(summary["truth"]) == root / "truth.json"
+
+
+def test_full_synthetic_contract_reaches_directional_completion(tmp_path: Path) -> None:
+    root = tmp_path / "contract"
+    progress: list[tuple[str, int, int]] = []
+
+    receipt = run_contract_validation(
+        output_dir=root,
+        workflow_lock=ROOT / "config" / "workflows.toml",
+        progress=lambda stage, current, total: progress.append((stage, current, total)),
+    )
+
+    assert receipt["stage"] == "synthetic_contract_validation_complete"
+    assert receipt["scientific_execution_performed"] is False
+    assert receipt["synthetic_upstream_artifacts"] is True
+    assert receipt["automatic_exclusions"] == 0
+    assert receipt["direction_validation"]["passed"] is True
+    assert progress[-1] == ("differential_completion", 8, 8)
+    assert (root / "synthetic_contract_receipt.json").is_file()
+    assert all(Path(record["path"]).is_file() for record in receipt["artifacts"].values())
+
+    with pytest.raises(SyntheticContractError, match="refusing to overwrite"):
+        run_contract_validation(
+            output_dir=root,
+            workflow_lock=ROOT / "config" / "workflows.toml",
+        )
+
+
+def test_synthetic_contract_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "contract-cli"
+
+    assert synthetic_main(
+        [
+            "validate-contract",
+            "--output-dir",
+            str(root),
+            "--workflow-lock",
+            str(ROOT / "config" / "workflows.toml"),
+            "--quiet",
+        ]
+    ) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "synthetic_contract_validation_complete"
+    assert summary["scientific_execution_performed"] is False
+    assert summary["direction_validation_passed"] is True
