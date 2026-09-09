@@ -1,6 +1,6 @@
 # RNA-seq Service Framework Roadmap
 
-Status: **M0–M6 complete; M7 planned**
+Status: **M0–M6 complete; M7 in progress**
 
 ## Goal
 
@@ -80,11 +80,10 @@ repository invented the underlying RNA-seq methods.
 
 ### M7 — Synthetic end-to-end validation
 
-- deterministic paired-end fixture with known expression differences;
-- direct test profile;
-- pre-staged offline smoke test;
-- restart/resume test;
-- expected-direction and output-contract assertions.
+- complete: deterministic paired-end fixture with known expression differences;
+- complete: all wrapper gates and expected-direction/output-contract assertions;
+- complete: direct, sealed-offline, SLURM, and restart/resume control smoke tests;
+- pending: run the real pinned upstream test profiles on non-client infrastructure.
 
 ### M8 — Client handoff and portfolio release
 

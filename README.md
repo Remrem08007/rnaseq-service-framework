@@ -140,6 +140,17 @@ and hashed with progress before an immutable interpretation-pending receipt can
 be written. See
 [`docs/DIFFERENTIAL_HANDOFF.md`](docs/DIFFERENTIAL_HANDOFF.md).
 
+## M7 synthetic validation
+
+M7 can generate deterministic paired FASTQs, a four-gene mini reference, intake
+tables, and an explicit directional truth set without client data. Its fast
+contract validator drives those inputs through every service gate, checks the
+known fold-change directions, verifies direct/offline planning and safe
+restart/resume controls, and writes a checksum-bound receipt. Synthetic
+upstream-shaped artifacts are clearly labeled: this validates the wrapper but
+does not claim that STAR, Salmon, or DESeq2 ran. See
+[`docs/SYNTHETIC_VALIDATION.md`](docs/SYNTHETIC_VALIDATION.md).
+
 ## Documentation
 
 - [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.md) — supported intake,
@@ -159,6 +170,9 @@ be written. See
 - [`docs/DIFFERENTIAL_HANDOFF.md`](docs/DIFFERENTIAL_HANDOFF.md) — accepted-only
   matrices, pinned DESeq2 planning, execution, output verification, and
   interpretation boundaries;
+- [`docs/SYNTHETIC_VALIDATION.md`](docs/SYNTHETIC_VALIDATION.md) — deterministic
+  non-client fixtures, complete wrapper validation, execution-mode smoke tests,
+  and the boundary before real upstream testing;
 - [`ROADMAP.md`](ROADMAP.md) — M0–M8 implementation plan.
 
 ## Data and privacy policy
