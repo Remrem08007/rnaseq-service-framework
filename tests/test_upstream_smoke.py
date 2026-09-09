@@ -10,11 +10,101 @@ from rnaseq_service.upstream_smoke import (
     UpstreamSmokeError,
     create_upstream_smoke_launcher,
     create_upstream_smoke_plan,
+    create_upstream_smoke_receipt,
+    inspect_upstream_smoke_completion,
 )
 from rnaseq_service.upstream_smoke_cli import main as smoke_main
 
 
 ROOT = Path(__file__).parents[1]
+
+
+def _file(path: Path, content: str = "evidence\n") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _complete_fixture(plan: dict[str, object]) -> None:
+    run_root = Path(str(plan["execution"]["run_root"]))
+    trace = (
+        "task_id\tname\tstatus\trealtime\t%cpu\tpeak_rss\tduration\n"
+        "1\tTASK\tCOMPLETED\t1s\t100%\t1 MB\t1s\n"
+    )
+    for stage_id in ("rnaseq", "differential"):
+        stage_root = run_root / stage_id
+        execution = stage_root / "execution"
+        results = stage_root / "results"
+        _file(execution / "trace.tsv", trace)
+        for name in ("report.html", "timeline.html", "dag.html"):
+            _file(execution / name)
+        _file(
+            results / "pipeline_info" / "params.json",
+            json.dumps({"outdir": str(results.resolve())}),
+        )
+        version_name = (
+            "nf_core_rnaseq_software_mqc_versions.yml"
+            if stage_id == "rnaseq"
+            else "nf_core_differentialabundance_software_versions.yml"
+        )
+        _file(results / "pipeline_info" / version_name)
+    rnaseq = run_root / "rnaseq" / "results"
+    _file(rnaseq / "multiqc" / "star_salmon" / "multiqc_report.html")
+    _file(rnaseq / "star_salmon" / "salmon.merged.gene_counts.tsv")
+    _file(rnaseq / "star_salmon" / "salmon.merged.gene_tpm.tsv")
+    differential = run_root / "differential" / "results"
+    prefix = "treatment_mCherry_hND6__SRP254919"
+    _file(
+        differential
+        / "report"
+        / "rnaseq_deseq2_gsea"
+        / "SRP254919_differentialabundance_report.html"
+    )
+    _file(
+        differential
+        / "tables"
+        / "processed_abundance"
+        / "rnaseq_deseq2_gsea"
+        / "all.normalised_counts.tsv"
+    )
+    _file(
+        differential
+        / "tables"
+        / "processed_abundance"
+        / "rnaseq_deseq2_gsea"
+        / "all.vst.tsv"
+    )
+    _file(
+        differential
+        / "tables"
+        / "differential"
+        / "rnaseq_deseq2_gsea"
+        / f"{prefix}.deseq2.results.tsv"
+    )
+    _file(
+        differential
+        / "tables"
+        / "differential"
+        / "rnaseq_deseq2_gsea"
+        / f"{prefix}.deseq2.results_filtered.tsv"
+    )
+    _file(
+        differential
+        / "plots"
+        / "differential"
+        / "rnaseq_deseq2_gsea"
+        / prefix
+        / "png"
+        / "volcano.png"
+    )
+    _file(
+        differential
+        / "report"
+        / "gsea"
+        / "rnaseq_deseq2_gsea"
+        / prefix
+        / "hallmarks"
+        / f"{prefix}.hallmarks.Gsea.rpt"
+    )
 
 
 def test_plan_pins_both_official_public_test_profiles(tmp_path: Path) -> None:
@@ -186,3 +276,111 @@ def test_prepare_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
     summary = json.loads(capsys.readouterr().out)
     assert summary["prepared"] is True
     assert summary["submitted"] is False
+
+
+def test_completion_requires_both_successful_scientific_stages(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    plan = create_upstream_smoke_plan(
+        workflow_lock=ROOT / "config" / "workflows.toml",
+        output=plan_path,
+        run_root=tmp_path / "runs",
+        network_mode="direct",
+    )
+    _complete_fixture(plan)
+    progress: list[tuple[str, int, int]] = []
+
+    result = inspect_upstream_smoke_completion(
+        plan_path,
+        progress=lambda role, current, total: progress.append((role, current, total)),
+    )
+
+    assert result["stage"] == "upstream_smoke_complete"
+    assert result["scientific_execution_performed"] is True
+    assert result["uses_public_upstream_test_data"] is True
+    assert result["contains_client_data"] is False
+    assert [stage["id"] for stage in result["stages"]] == ["rnaseq", "differential"]
+    assert all(stage["task_summary"]["task_count"] == 1 for stage in result["stages"])
+    assert {artifact["role"] for artifact in result["stages"][0]["artifacts"]} >= {
+        "multiqc_report",
+        "gene_counts",
+        "gene_tpm",
+    }
+    assert {artifact["role"] for artifact in result["stages"][1]["artifacts"]} >= {
+        "deseq2_results",
+        "volcano_plot",
+        "gsea_report",
+    }
+    assert progress
+
+
+def test_completion_receipt_is_immutable_and_private(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    plan = create_upstream_smoke_plan(
+        workflow_lock=ROOT / "config" / "workflows.toml",
+        output=plan_path,
+        run_root=tmp_path / "runs",
+        network_mode="proxy",
+    )
+    _complete_fixture(plan)
+    receipt = tmp_path / "private" / "upstream-smoke.complete.json"
+
+    create_upstream_smoke_receipt(run_plan=plan_path, output=receipt)
+
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+    with pytest.raises(UpstreamSmokeError, match="refusing to overwrite"):
+        create_upstream_smoke_receipt(run_plan=plan_path, output=receipt)
+
+
+def test_completion_rejects_nonterminal_trace_and_missing_science(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    plan = create_upstream_smoke_plan(
+        workflow_lock=ROOT / "config" / "workflows.toml",
+        output=plan_path,
+        run_root=tmp_path / "runs",
+        network_mode="direct",
+    )
+    _complete_fixture(plan)
+    trace = Path(str(plan["execution"]["run_root"])) / "rnaseq" / "execution" / "trace.tsv"
+    trace.write_text(
+        "task_id\tname\tstatus\trealtime\t%cpu\tpeak_rss\tduration\n"
+        "1\tTASK\tRUNNING\t1s\t100%\t1 MB\t1s\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(UpstreamSmokeError, match="not complete and successful"):
+        inspect_upstream_smoke_completion(plan_path)
+
+    trace.write_text(
+        "task_id\tname\tstatus\trealtime\t%cpu\tpeak_rss\tduration\n"
+        "1\tTASK\tCOMPLETED\t1s\t100%\t1 MB\t1s\n",
+        encoding="utf-8",
+    )
+    gsea = next(
+        (Path(str(plan["execution"]["run_root"])) / "differential" / "results").glob(
+            "report/gsea/**/*.Gsea.rpt"
+        )
+    )
+    gsea.unlink()
+    with pytest.raises(UpstreamSmokeError, match="GSEA report"):
+        inspect_upstream_smoke_completion(plan_path)
+
+
+def test_complete_cli_reports_real_upstream_scope(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    plan = create_upstream_smoke_plan(
+        workflow_lock=ROOT / "config" / "workflows.toml",
+        output=plan_path,
+        run_root=tmp_path / "runs",
+        network_mode="direct",
+    )
+    _complete_fixture(plan)
+    output = tmp_path / "receipt.json"
+
+    assert smoke_main(
+        ["complete", "--run-plan", str(plan_path), "--output", str(output), "--quiet"]
+    ) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "upstream_smoke_complete"
+    assert summary["scientific_execution_performed"] is True
+    assert [stage["id"] for stage in summary["stages"]] == ["rnaseq", "differential"]

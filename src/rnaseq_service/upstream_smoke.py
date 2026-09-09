@@ -7,9 +7,11 @@ import os
 import shlex
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from .hpc_config import MODULE_TOKEN, SLURM_TIME, TOKEN
 from .plan import CONTAINER_ENGINES, PROXY_VARIABLES, sha256_file
+from .resources import ResourceSummaryError, summarize_trace
 from .workflow_lock import WorkflowLockError, load_workflow_lock
 
 
@@ -18,6 +20,7 @@ TEST_PROFILES = {
     "rnaseq": "test",
     "differential": "test_rnaseq_deseq2_gsea",
 }
+HashProgress = Callable[[str, int, int], None]
 
 
 class UpstreamSmokeError(ValueError):
@@ -85,6 +88,10 @@ def create_upstream_smoke_plan(
         raise UpstreamSmokeError("upstream smoke network mode must be 'direct' or 'proxy'")
     if container_engine not in CONTAINER_ENGINES:
         raise UpstreamSmokeError(f"unsupported container engine: {container_engine!r}")
+    if run_root.exists():
+        raise UpstreamSmokeError(
+            f"upstream smoke run root must not already exist: {run_root}"
+        )
     try:
         lock = load_workflow_lock(workflow_lock)
     except WorkflowLockError as exc:
@@ -182,19 +189,44 @@ def _read_plan(path: Path) -> tuple[Path, dict[str, object]]:
     lock = plan.get("workflow_lock")
     if not isinstance(lock, dict):
         raise UpstreamSmokeError("upstream smoke plan has no workflow-lock control")
-    lock_path = Path(str(lock.get("path", ""))).resolve(strict=True)
+    try:
+        lock_path = Path(str(lock.get("path", ""))).resolve(strict=True)
+    except OSError as exc:
+        raise UpstreamSmokeError("workflow lock is unavailable after smoke planning") from exc
     if lock_path.stat().st_size != lock.get("size_bytes"):
         raise UpstreamSmokeError("workflow lock size changed after smoke planning")
     if sha256_file(lock_path) != lock.get("sha256"):
         raise UpstreamSmokeError("workflow lock checksum changed after smoke planning")
+    try:
+        workflow_lock = load_workflow_lock(lock_path)
+    except WorkflowLockError as exc:
+        raise UpstreamSmokeError(str(exc)) from exc
+    execution = plan.get("execution")
+    if (
+        not isinstance(execution, dict)
+        or execution.get("network_mode") not in NETWORK_MODES
+        or execution.get("container_engine") not in CONTAINER_ENGINES
+        or not isinstance(execution.get("run_root"), str)
+    ):
+        raise UpstreamSmokeError("upstream smoke plan has an invalid execution record")
     stages = plan.get("stages")
     if (
         not isinstance(stages, list)
+        or not all(isinstance(stage, dict) for stage in stages)
         or [stage.get("id") for stage in stages if isinstance(stage, dict)]
         != ["rnaseq", "differential"]
     ):
         raise UpstreamSmokeError("upstream smoke plan has invalid stages")
+    expected_workflows = {
+        "rnaseq": (workflow_lock.rnaseq.name, workflow_lock.rnaseq.revision),
+        "differential": (
+            workflow_lock.differential.name,
+            workflow_lock.differential.revision,
+        ),
+    }
+    run_root = Path(str(execution["run_root"])).resolve()
     for stage in stages:
+        stage_id = str(stage.get("id"))
         argv = stage.get("command_argv")
         if (
             not isinstance(argv, list)
@@ -206,7 +238,322 @@ def _read_plan(path: Path) -> tuple[Path, dict[str, object]]:
             raise UpstreamSmokeError(f"upstream smoke stage {stage.get('id')!r} is invalid")
         if stage.get("command_preview") != shlex.join(argv):
             raise UpstreamSmokeError(f"upstream smoke stage {stage.get('id')!r} preview changed")
+        workflow_name, revision = expected_workflows[stage_id]
+        if stage.get("workflow") != {"name": workflow_name, "revision": revision}:
+            raise UpstreamSmokeError(f"upstream smoke stage {stage_id!r} workflow pin changed")
+        if stage.get("test_profile") != TEST_PROFILES[stage_id]:
+            raise UpstreamSmokeError(f"upstream smoke stage {stage_id!r} test profile changed")
+        expected_options = {
+            "-log": run_root / stage_id / "execution" / "nextflow.log",
+            "-r": revision,
+            "-profile": (
+                f"{TEST_PROFILES[stage_id]},{execution['container_engine']}"
+            ),
+            "-work-dir": run_root / stage_id / "work",
+            "-with-report": run_root / stage_id / "execution" / "report.html",
+            "-with-trace": run_root / stage_id / "execution" / "trace.tsv",
+            "-with-timeline": run_root / stage_id / "execution" / "timeline.html",
+            "-with-dag": run_root / stage_id / "execution" / "dag.html",
+            "--outdir": run_root / stage_id / "results",
+        }
+        if argv[4] != workflow_name:
+            raise UpstreamSmokeError(f"upstream smoke stage {stage_id!r} command workflow changed")
+        for option, expected in expected_options.items():
+            if argv.count(option) != 1:
+                raise UpstreamSmokeError(
+                    f"upstream smoke stage {stage_id!r} has invalid {option} option"
+                )
+            index = argv.index(option)
+            if index + 1 >= len(argv) or str(argv[index + 1]) != str(expected):
+                raise UpstreamSmokeError(
+                    f"upstream smoke stage {stage_id!r} {option} value changed"
+                )
     return resolved, plan
+
+
+def _required_file(path: Path, role: str) -> Path:
+    if not path.is_file():
+        raise UpstreamSmokeError(f"missing required {role}: {path}")
+    if path.stat().st_size == 0:
+        raise UpstreamSmokeError(f"empty required {role}: {path}")
+    return path.resolve()
+
+
+def _matches(root: Path, pattern: str, role: str) -> list[Path]:
+    matches = sorted(path.resolve() for path in root.glob(pattern) if path.is_file())
+    if not matches:
+        raise UpstreamSmokeError(f"missing required {role} matching {root / pattern}")
+    for path in matches:
+        _required_file(path, role)
+        try:
+            path.relative_to(root.resolve())
+        except ValueError as exc:
+            raise UpstreamSmokeError(f"{role} resolves outside its stage output: {path}") from exc
+    return matches
+
+
+def _one_match(root: Path, pattern: str, role: str) -> Path:
+    matches = _matches(root, pattern, role)
+    if len(matches) != 1:
+        raise UpstreamSmokeError(
+            f"expected exactly one {role} matching {root / pattern}; found {len(matches)}"
+        )
+    return matches[0]
+
+
+def _read_params(path: Path, expected_outdir: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UpstreamSmokeError(f"could not read pipeline params.json: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise UpstreamSmokeError("pipeline params.json must contain a JSON object")
+    value = payload.get("outdir")
+    if not isinstance(value, str) or Path(value).resolve() != expected_outdir.resolve():
+        raise UpstreamSmokeError("pipeline params.json 'outdir' conflicts with the run plan")
+    return payload
+
+
+def _hash_artifact(
+    *,
+    stage: str,
+    role: str,
+    path: Path,
+    run_root: Path,
+    progress: HashProgress | None,
+) -> dict[str, object]:
+    import hashlib
+
+    try:
+        relative_path = path.relative_to(run_root)
+    except ValueError as exc:
+        raise UpstreamSmokeError(
+            f"{stage} artifact resolves outside the smoke run root: {path}"
+        ) from exc
+    total = path.stat().st_size
+    completed = 0
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+            completed += len(chunk)
+            if progress is not None:
+                progress(f"{stage}:{role}", completed, total)
+    if progress is not None and total == 0:
+        progress(f"{stage}:{role}", 0, 0)
+    return {
+        "role": role,
+        "path": str(path),
+        "relative_path": str(relative_path),
+        "size_bytes": total,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _stage_artifacts(stage_id: str, stage_root: Path) -> list[tuple[str, Path]]:
+    execution = stage_root / "execution"
+    results = stage_root / "results"
+    artifacts: list[tuple[str, Path]] = [
+        (
+            "nextflow_report",
+            _required_file(execution / "report.html", "Nextflow report"),
+        ),
+        ("nextflow_trace", _required_file(execution / "trace.tsv", "Nextflow trace")),
+        (
+            "nextflow_timeline",
+            _required_file(execution / "timeline.html", "Nextflow timeline"),
+        ),
+        ("nextflow_dag", _required_file(execution / "dag.html", "Nextflow DAG")),
+        (
+            "pipeline_params",
+            _required_file(results / "pipeline_info" / "params.json", "pipeline parameters"),
+        ),
+        (
+            "software_versions",
+            _one_match(
+                results / "pipeline_info",
+                "*software*versions.yml",
+                "software versions file",
+            ),
+        ),
+    ]
+    if stage_id == "rnaseq":
+        artifacts.extend(
+            [
+                (
+                    "multiqc_report",
+                    _one_match(results, "multiqc/*/multiqc_report.html", "MultiQC report"),
+                ),
+                (
+                    "gene_counts",
+                    _matches(
+                        results,
+                        "*/salmon.merged.gene_counts.tsv",
+                        "merged Salmon gene-count matrix",
+                    )[0],
+                ),
+                (
+                    "gene_tpm",
+                    _matches(
+                        results,
+                        "*/salmon.merged.gene_tpm.tsv",
+                        "merged Salmon gene-TPM matrix",
+                    )[0],
+                ),
+            ]
+        )
+    else:
+        artifacts.extend(
+            [
+                (
+                    "analysis_report",
+                    _one_match(
+                        results,
+                        "report/rnaseq_deseq2_gsea/*_differentialabundance_report.html",
+                        "differential-abundance report",
+                    ),
+                ),
+                (
+                    "normalised_counts",
+                    _one_match(
+                        results,
+                        "tables/processed_abundance/rnaseq_deseq2_gsea/*.normalised_counts.tsv",
+                        "normalised-count matrix",
+                    ),
+                ),
+                (
+                    "vst_counts",
+                    _one_match(
+                        results,
+                        "tables/processed_abundance/rnaseq_deseq2_gsea/*.vst.tsv",
+                        "variance-stabilised matrix",
+                    ),
+                ),
+                (
+                    "deseq2_results",
+                    _matches(
+                        results,
+                        "tables/differential/rnaseq_deseq2_gsea/*.deseq2.results.tsv",
+                        "DESeq2 result table",
+                    )[0],
+                ),
+                (
+                    "deseq2_filtered",
+                    _matches(
+                        results,
+                        "tables/differential/rnaseq_deseq2_gsea/*.deseq2.results_filtered.tsv",
+                        "filtered DESeq2 result table",
+                    )[0],
+                ),
+                (
+                    "volcano_plot",
+                    _matches(
+                        results,
+                        "plots/differential/rnaseq_deseq2_gsea/*/png/volcano.png",
+                        "volcano plot",
+                    )[0],
+                ),
+                (
+                    "gsea_report",
+                    _matches(results, "report/gsea/**/*.Gsea.rpt", "GSEA report")[0],
+                ),
+            ]
+        )
+    return artifacts
+
+
+def inspect_upstream_smoke_completion(
+    run_plan: Path,
+    *,
+    progress: HashProgress | None = None,
+) -> dict[str, object]:
+    """Validate both genuine upstream test-profile runs without writing a receipt."""
+
+    plan_path, plan = _read_plan(run_plan)
+    run_root = Path(str(plan["execution"]["run_root"])).resolve()
+    stage_records: list[dict[str, object]] = []
+    for stage in plan["stages"]:
+        stage_id = str(stage["id"])
+        stage_root = run_root / stage_id
+        artifacts = _stage_artifacts(stage_id, stage_root)
+        by_role = dict(artifacts)
+        try:
+            trace_summary = summarize_trace(by_role["nextflow_trace"])
+        except ResourceSummaryError as exc:
+            raise UpstreamSmokeError(str(exc)) from exc
+        if not trace_summary["all_tasks_successful"]:
+            raise UpstreamSmokeError(
+                f"{stage_id} trace is not complete and successful: "
+                f"failed={trace_summary['failed_task_count']}, "
+                f"nonterminal_or_unknown={trace_summary['other_task_count']}"
+            )
+        _read_params(by_role["pipeline_params"], stage_root / "results")
+        inventory = [
+            _hash_artifact(
+                stage=stage_id,
+                role=role,
+                path=path,
+                run_root=run_root,
+                progress=progress,
+            )
+            for role, path in artifacts
+        ]
+        stage_records.append(
+            {
+                "id": stage_id,
+                "workflow": stage["workflow"],
+                "test_profile": stage["test_profile"],
+                "task_summary": {
+                    "task_count": trace_summary["task_count"],
+                    "process_count": trace_summary["process_count"],
+                    "failed_task_count": trace_summary["failed_task_count"],
+                    "other_task_count": trace_summary["other_task_count"],
+                },
+                "artifacts": inventory,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "stage": "upstream_smoke_complete",
+        "run_plan": _control(plan_path),
+        "workflow_lock": plan["workflow_lock"],
+        "runtime": plan["runtime"],
+        "execution": plan["execution"],
+        "stages": stage_records,
+        "controls_verified": True,
+        "scientific_execution_performed": True,
+        "uses_public_upstream_test_data": True,
+        "contains_client_data": False,
+        "contains_secrets": False,
+        "validation_scope": "official_upstream_test_profiles_not_client_study_validation",
+    }
+
+
+def create_upstream_smoke_receipt(
+    *,
+    run_plan: Path,
+    output: Path,
+    progress: HashProgress | None = None,
+) -> dict[str, object]:
+    """Exclusively seal a successful two-stage upstream smoke run."""
+
+    if output.exists():
+        raise UpstreamSmokeError(f"refusing to overwrite completion receipt: {output}")
+    payload = inspect_upstream_smoke_completion(run_plan, progress=progress)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise UpstreamSmokeError(f"refusing to overwrite completion receipt: {output}") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
+    return payload
 
 
 def create_upstream_smoke_launcher(
