@@ -5,7 +5,7 @@ differential_name = "nf-core/differentialabundance"
 differential_revision = "2.0.0"
 
 [runtime]
-nextflow_version = "26.04.6"
+nextflow_version = "26.04.4"
 nf_core_tools_version = "4.1.0"
 
 [policy]

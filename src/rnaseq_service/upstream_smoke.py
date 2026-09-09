@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import shlex
@@ -209,6 +210,11 @@ def _read_plan(path: Path) -> tuple[Path, dict[str, object]]:
         or not isinstance(execution.get("run_root"), str)
     ):
         raise UpstreamSmokeError("upstream smoke plan has an invalid execution record")
+    if plan.get("runtime") != {
+        "nextflow_version": workflow_lock.runtime.nextflow_version,
+        "nf_core_tools_version": workflow_lock.runtime.nf_core_tools_version,
+    }:
+        raise UpstreamSmokeError("upstream smoke runtime pin changed after planning")
     stages = plan.get("stages")
     if (
         not isinstance(stages, list)
@@ -471,6 +477,35 @@ def inspect_upstream_smoke_completion(
 
     plan_path, plan = _read_plan(run_plan)
     run_root = Path(str(plan["execution"]["run_root"])).resolve()
+    runtime_path = _required_file(
+        run_root / "runtime" / "versions.tsv", "runtime-version evidence"
+    )
+    try:
+        with runtime_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            if reader.fieldnames != ["tool", "version"]:
+                raise UpstreamSmokeError("runtime-version evidence has invalid columns")
+            runtime_rows = list(reader)
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise UpstreamSmokeError(f"could not read runtime-version evidence: {exc}") from exc
+    observed = {row["tool"]: row["version"] for row in runtime_rows}
+    expected_nextflow = str(plan["runtime"]["nextflow_version"])
+    expected_engine = str(plan["execution"]["container_engine"])
+    if observed.get("nextflow") != expected_nextflow:
+        raise UpstreamSmokeError(
+            "observed Nextflow version does not match the workflow lock"
+        )
+    if observed.get("container_engine") != expected_engine:
+        raise UpstreamSmokeError("observed container engine does not match the run plan")
+    if not observed.get("container_runtime"):
+        raise UpstreamSmokeError("runtime-version evidence has no container runtime version")
+    runtime_artifact = _hash_artifact(
+        stage="runtime",
+        role="versions",
+        path=runtime_path,
+        run_root=run_root,
+        progress=progress,
+    )
     stage_records: list[dict[str, object]] = []
     for stage in plan["stages"]:
         stage_id = str(stage["id"])
@@ -519,6 +554,13 @@ def inspect_upstream_smoke_completion(
         "run_plan": _control(plan_path),
         "workflow_lock": plan["workflow_lock"],
         "runtime": plan["runtime"],
+        "runtime_verification": {
+            "expected_nextflow_version": expected_nextflow,
+            "observed_nextflow_version": observed["nextflow"],
+            "container_engine": observed["container_engine"],
+            "container_runtime": observed["container_runtime"],
+            "artifact": runtime_artifact,
+        },
         "execution": plan["execution"],
         "stages": stage_records,
         "controls_verified": True,
@@ -605,12 +647,35 @@ def create_upstream_smoke_launcher(
         f"mkdir -p {shlex.quote(str(log_dir))}",
         f"mkdir -p {shlex.quote(str(run_root / 'rnaseq' / 'execution'))}",
         f"mkdir -p {shlex.quote(str(run_root / 'differential' / 'execution'))}",
+        f"mkdir -p {shlex.quote(str(run_root / 'runtime'))}",
     ]
     if purge_modules:
         lines.append("module purge")
     lines.extend(f"module load {shlex.quote(module)}" for module in modules)
     lines.extend(
         [
+            "",
+            f"expected_nextflow={shlex.quote(str(plan['runtime']['nextflow_version']))}",
+            f"container_engine={shlex.quote(str(plan['execution']['container_engine']))}",
+            "actual_nextflow=$(nextflow -version 2>&1 | awk '/version/ && !found {for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\\.[0-9]+\\.[0-9]+(-edge)?$/) {print $i; found=1; break}}')",
+            "if [[ \"$actual_nextflow\" != \"$expected_nextflow\" ]]; then",
+            "    echo \"[upstream-smoke] Nextflow version mismatch: expected=${expected_nextflow} observed=${actual_nextflow:-unavailable}\" >&2",
+            "    exit 64",
+            "fi",
+            "if ! command -v \"$container_engine\" >/dev/null 2>&1; then",
+            "    echo \"[upstream-smoke] container engine unavailable: ${container_engine}\" >&2",
+            "    exit 64",
+            "fi",
+            "container_runtime=$(\"$container_engine\" --version 2>&1 | sed -n '1p' | tr '\\t\\r\\n' '   ')",
+            "if [[ -z \"$container_runtime\" ]]; then",
+            "    echo \"[upstream-smoke] container runtime version is unavailable\" >&2",
+            "    exit 64",
+            "fi",
+            f"runtime_evidence={shlex.quote(str(run_root / 'runtime' / 'versions.tsv'))}",
+            "printf 'tool\\tversion\\nnextflow\\t%s\\ncontainer_engine\\t%s\\ncontainer_runtime\\t%s\\n' \\",
+            "    \"$actual_nextflow\" \"$container_engine\" \"$container_runtime\" > \"$runtime_evidence\"",
+            "chmod 600 \"$runtime_evidence\"",
+            "echo \"[upstream-smoke] runtime verified nextflow=${actual_nextflow} engine=${container_engine}\" >&2",
             "",
             "run_stage() {",
             "    local label=\"$1\"",
