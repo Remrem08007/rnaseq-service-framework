@@ -75,9 +75,20 @@ rnaseq-service-plan \
   --infrastructure-config private/hpc/nextflow.config
 ```
 
-For a direct or proxy-aware run, omit `--offline-manifest` and select the
-corresponding network mode. The work directory must be on storage visible to
-the controller and every compute node.
+For a portable run that can move between clusters, use `--network-mode auto`
+and provide the sealed bundle as `--offline-manifest`. The generated controller
+chooses exactly one mode before Nextflow starts, in this order:
+
+1. the verified local workflow, container, and plugin bundle, when supplied;
+2. direct HTTPS access to the GitHub API and Quay when no bundle is supplied;
+3. `HTTPS_PROXY` or `https_proxy` when direct access is unavailable.
+
+The probes never start the scientific workflow, so selection cannot leave a
+partial online run behind before changing modes. `direct`, `proxy`, and `offline`
+remain available as explicit overrides. In `auto` mode the offline manifest is
+optional, but a disconnected job fails before Nextflow if neither network path
+works and no bundle was supplied. The work directory must be on storage visible
+to the controller and every compute node.
 
 ## 4. Prepare the immutable controller script
 
@@ -88,7 +99,8 @@ rnaseq-service-hpc prepare \
   --output private/launch/study-001/controller.sbatch
 ```
 
-Preparation re-hashes every plan control file, confirms the Nextflow config is
+Preparation re-hashes every plan control file, re-verifies every bundled file
+when an offline or automatic fallback is present, confirms the Nextflow config is
 the exact rendering of the supplied settings, requires a SLURM plan containing
 `-resume`, checks that the work directory is under `work_root`, and enforces
 `NXF_OFFLINE=true` for offline plans. The script and log directory are created
@@ -97,7 +109,9 @@ before submission; the script is mode `0700`.
 Proxy values are never written into the launcher. `#SBATCH --export=ALL`
 allows a deliberately configured submission environment to be inherited. For
 offline operation, only the non-secret bundle paths and offline flag are
-explicitly exported.
+explicitly exported. Every controller writes
+`OUTDIR/execution/network_selection.tsv`, recording the requested mode, selected
+mode, and whether an offline bundle was available.
 
 ## 5. Submit exactly once
 

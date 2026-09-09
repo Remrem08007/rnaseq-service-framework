@@ -93,7 +93,10 @@ Existing manifests and plans are never overwritten. See
 M2 implements staging and offline verification. It downloads both workflows
 and their Apptainer images with visible progress, supports standard proxy
 environment variables without storing their values, seals every artifact with
-SHA-256, and refuses offline planning until the bundle verifies. See
+SHA-256, and refuses offline planning until the bundle verifies. Automatic HPC
+mode prefers a verified local bundle when available; without one, it probes
+direct access and then a configured HTTPS proxy before starting Nextflow. This
+allows the same plan to run on connected or network-isolated clusters. See
 [`docs/OFFLINE_STAGING.md`](docs/OFFLINE_STAGING.md).
 
 ## M3 HPC execution

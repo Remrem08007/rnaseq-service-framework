@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -15,6 +16,7 @@ from rnaseq_service.inputs import create_input_manifest
 from rnaseq_service.plan import create_rnaseq_plan
 from rnaseq_service.primary import PrimaryDeliveryError, prepare_safe_restart
 from test_differential import accepted_fixture
+from test_plan import make_offline_manifest
 
 
 ROOT = Path(__file__).parents[1]
@@ -81,7 +83,12 @@ modules = ["nextflow/26.04.4", "apptainer/1.3.5"]
     return settings
 
 
-def make_run_plan(tmp_path: Path) -> tuple[Path, Path]:
+def make_run_plan(
+    tmp_path: Path,
+    *,
+    network_mode: str = "direct",
+    offline_manifest: Path | None = None,
+) -> tuple[Path, Path]:
     settings = make_settings(tmp_path)
     config = tmp_path / "generated" / "nextflow.config"
     write_nextflow_config(settings, config)
@@ -97,12 +104,13 @@ def make_run_plan(tmp_path: Path) -> tuple[Path, Path]:
         output=plan_path,
         outdir=tmp_path / "results",
         workdir=tmp_path / "shared-work" / "study-1",
-        network_mode="direct",
+        network_mode=network_mode,
         container_engine="apptainer",
         executor="slurm",
         infrastructure_config=config,
         input_manifest=input_manifest,
         genome="GRCh38",
+        offline_manifest=offline_manifest,
     )
     return plan_path, settings
 
@@ -122,6 +130,103 @@ def test_prepare_launcher_verifies_plan_and_renders_resume(tmp_path: Path) -> No
     assert "-resume" in rendered
     assert stat.S_IMODE(launcher.stat().st_mode) == 0o700
     assert (launcher.parent / "logs").is_dir()
+
+
+def test_auto_launcher_defaults_to_verified_offline_bundle(tmp_path: Path) -> None:
+    manifest = make_offline_manifest(tmp_path)
+    plan, settings = make_run_plan(
+        tmp_path,
+        network_mode="auto",
+        offline_manifest=manifest,
+    )
+    launcher = tmp_path / "launch" / "controller.sbatch"
+
+    prepare_launcher(run_plan=plan, settings_path=settings, output=launcher)
+    rendered = launcher.read_text(encoding="utf-8")
+
+    assert "selected_network=offline" in rendered
+    assert "export NXF_OFFLINE=true" in rendered
+    assert "/pipelines/rnaseq/workflow" in rendered
+    assert "network_selection.tsv" in rendered
+    assert "probe_endpoint" not in rendered
+    subprocess.run(["bash", "-n", str(launcher)], check=True)
+
+
+def test_auto_launcher_probes_direct_then_proxy_without_bundle(tmp_path: Path) -> None:
+    plan, settings = make_run_plan(tmp_path, network_mode="auto")
+    launcher = tmp_path / "launch" / "controller.sbatch"
+
+    prepare_launcher(run_plan=plan, settings_path=settings, output=launcher)
+    rendered = launcher.read_text(encoding="utf-8")
+
+    assert "if online_ready direct" in rendered
+    assert "online_ready proxy" in rendered
+    assert "selected_network=offline" not in rendered
+    assert rendered.index("if online_ready direct") < rendered.index("online_ready proxy")
+    subprocess.run(["bash", "-n", str(launcher)], check=True)
+
+
+def test_auto_launcher_executes_verified_offline_bundle_without_network_probe(
+    tmp_path: Path,
+) -> None:
+    manifest = make_offline_manifest(tmp_path)
+    plan_path, settings = make_run_plan(
+        tmp_path,
+        network_mode="auto",
+        offline_manifest=manifest,
+    )
+    launcher = tmp_path / "launch" / "controller.sbatch"
+    prepare_launcher(run_plan=plan_path, settings_path=settings, output=launcher)
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    for name, script in {
+        "module": "#!/usr/bin/env bash\nexit 0\n",
+        "curl": "#!/usr/bin/env bash\ntouch \"$CURL_CALLED\"\nexit 99\n",
+        "nextflow": (
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$NXF_OFFLINE\" \"$2\" > \"$CAPTURE\"\n"
+        ),
+    }.items():
+        path = fake_bin / name
+        path.write_text(script, encoding="utf-8")
+        path.chmod(0o700)
+    capture = tmp_path / "nextflow-call.txt"
+    environment = os.environ.copy()
+    curl_called = tmp_path / "curl-called"
+    environment.update(
+        PATH=f"{fake_bin}:{environment['PATH']}",
+        CAPTURE=str(capture),
+        CURL_CALLED=str(curl_called),
+    )
+
+    subprocess.run(["bash", str(launcher)], env=environment, check=True)
+
+    selected = (
+        tmp_path / "results" / "execution" / "network_selection.tsv"
+    ).read_text(encoding="utf-8")
+    assert "auto\toffline\ttrue" in selected
+    observed = capture.read_text(encoding="utf-8").splitlines()
+    assert observed[0] == "true"
+    assert observed[1].endswith("/pipelines/rnaseq/workflow")
+    assert not curl_called.exists()
+
+
+def test_prepare_reverifies_auto_fallback_bundle(tmp_path: Path) -> None:
+    manifest = make_offline_manifest(tmp_path)
+    plan, settings = make_run_plan(
+        tmp_path,
+        network_mode="auto",
+        offline_manifest=manifest,
+    )
+    (manifest.parent / "containers" / "tool.sif").write_bytes(b"tampered")
+
+    with pytest.raises(HPCRunError, match="offline bundle verification failed"):
+        prepare_launcher(
+            run_plan=plan,
+            settings_path=settings,
+            output=tmp_path / "controller.sbatch",
+        )
 
 
 def test_prepare_launcher_supports_differential_plan_without_fastqs(tmp_path: Path) -> None:

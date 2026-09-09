@@ -188,6 +188,24 @@ def test_offline_mode_requires_and_verifies_local_bundle(tmp_path: Path) -> None
     assert "offline_manifest" in plan["control_files"]
 
 
+def test_auto_mode_records_ordered_online_and_offline_commands(tmp_path: Path) -> None:
+    kwargs = plan_kwargs(tmp_path)
+    manifest = make_offline_manifest(tmp_path)
+    kwargs.update(network_mode="auto", offline_manifest=manifest)
+
+    plan = create_rnaseq_plan(**kwargs)
+
+    assert plan["command_argv"][2] == "nf-core/rnaseq"
+    assert plan["command_argv"][3:5] == ["-r", "3.26.0"]
+    assert plan["execution"]["required_environment"] == {}
+    fallback = plan["execution"]["offline_fallback"]
+    assert fallback["command_argv"][2].endswith("/pipelines/rnaseq/workflow")
+    assert "-r" not in fallback["command_argv"]
+    assert fallback["required_environment"]["NXF_OFFLINE"] == "true"
+    assert plan["execution"]["offline_bundle_verified"] is True
+    assert "offline_manifest" in plan["control_files"]
+
+
 def test_offline_mode_rejects_modified_bundle(tmp_path: Path) -> None:
     kwargs = plan_kwargs(tmp_path)
     manifest = make_offline_manifest(tmp_path)

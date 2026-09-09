@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workdir", type=Path, required=True)
     parser.add_argument(
         "--network-mode",
-        choices=("direct", "proxy", "offline"),
+        choices=("auto", "direct", "proxy", "offline"),
         required=True,
     )
     parser.add_argument(
@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--offline-manifest",
         type=Path,
-        help="sealed bundle manifest; required when --network-mode offline",
+        help="sealed bundle manifest; required for offline and optional auto fallback",
     )
     parser.add_argument("--min-replicates", type=int, default=2)
     return parser
