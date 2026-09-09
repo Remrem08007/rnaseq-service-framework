@@ -105,7 +105,12 @@ def test_full_synthetic_contract_reaches_directional_completion(tmp_path: Path) 
     assert receipt["synthetic_upstream_artifacts"] is True
     assert receipt["automatic_exclusions"] == 0
     assert receipt["direction_validation"]["passed"] is True
-    assert progress[-1] == ("differential_completion", 8, 8)
+    assert progress[-1] == ("execution_modes", 9, 9)
+    assert receipt["execution_modes"]["direct_plan_verified"] is True
+    assert receipt["execution_modes"]["offline_plan_verified"] is True
+    assert receipt["execution_modes"]["offline_network_disabled"] is True
+    assert receipt["execution_modes"]["restart_launcher_prepared"] is True
+    assert receipt["execution_modes"]["restart_submitted"] is False
     assert (root / "synthetic_contract_receipt.json").is_file()
     assert all(Path(record["path"]).is_file() for record in receipt["artifacts"].values())
 

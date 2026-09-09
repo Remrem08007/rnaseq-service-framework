@@ -11,11 +11,14 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
+from .bundle import seal_bundle, verify_bundle
 from .differential import create_differential_plan, create_differential_receipt
+from .hpc_config import write_nextflow_config
+from .hpc_run import prepare_launcher
 from .inputs import create_input_manifest
 from .plan import create_rnaseq_plan, sha256_file
 from .preflight import run_preflight
-from .primary import create_primary_receipt
+from .primary import create_primary_receipt, prepare_safe_restart
 from .qc import evaluate_qc, finalize_qc
 from .synthetic import GENES, PAIR_COUNTS, create_synthetic_study
 
@@ -30,6 +33,7 @@ STAGES = (
     "qc_acceptance",
     "differential_plan",
     "differential_completion",
+    "execution_modes",
 )
 PNG_1X1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
@@ -286,6 +290,178 @@ def _verify_direction(completion: dict[str, object]) -> dict[str, object]:
     return {"passed": True, "checks": checks, "log2_fold_changes": values}
 
 
+def _create_synthetic_offline_bundle(root: Path, workflow_lock: Path) -> Path:
+    bundle = root / "synthetic_offline_bundle"
+    rnaseq = bundle / "pipelines" / "rnaseq" / "workflow"
+    differential = bundle / "pipelines" / "differential" / "workflow"
+    containers = bundle / "containers"
+    plugins = bundle / "plugins" / "nf-schema-2.5.1"
+    for workflow in (rnaseq, differential):
+        workflow.mkdir(parents=True)
+        (workflow / "main.nf").write_text("nextflow.enable.dsl=2\n", encoding="utf-8")
+        (workflow / "nextflow.config").write_text("plugins {}\n", encoding="utf-8")
+    containers.mkdir(parents=True)
+    (containers / "synthetic.sif").write_bytes(b"synthetic-not-runnable")
+    plugins.mkdir(parents=True)
+    (plugins / "plugin.jar").write_bytes(b"synthetic-not-runnable")
+    seal_bundle(
+        bundle_dir=bundle,
+        workflow_lock=workflow_lock,
+        rnaseq_workflow=rnaseq,
+        differential_workflow=differential,
+        container_root=containers,
+        plugin_root=plugins.parent,
+    )
+    return bundle / "offline_bundle.manifest.json"
+
+
+def _validate_execution_modes(
+    *,
+    root: Path,
+    workflow_lock: Path,
+    samplesheet: Path,
+    design: Path,
+    contrasts: Path,
+    input_manifest: Path,
+    direct_plan: dict[str, object],
+) -> dict[str, object]:
+    direct_argv = direct_plan["command_argv"]
+    if (
+        direct_argv[:5] != ["nextflow", "run", "nf-core/rnaseq", "-r", "3.26.0"]
+        or direct_plan["execution"]["network_mode"] != "direct"
+        or direct_plan["execution"]["required_environment"]
+    ):
+        raise SyntheticContractError("direct-mode plan smoke check failed")
+
+    offline_manifest = _create_synthetic_offline_bundle(root, workflow_lock)
+    offline_verification = verify_bundle(
+        offline_manifest, expected_workflow_lock=workflow_lock
+    )
+    offline_plan_path = root / "private" / "plans" / "offline-primary.json"
+    offline_plan = create_rnaseq_plan(
+        samplesheet=samplesheet,
+        design=design,
+        contrasts=contrasts,
+        workflow_lock=workflow_lock,
+        output=offline_plan_path,
+        outdir=root / "results" / "offline-plan-only",
+        workdir=root / "work" / "offline-plan-only",
+        network_mode="offline",
+        container_engine="apptainer",
+        executor="local",
+        offline_manifest=offline_manifest,
+        input_manifest=input_manifest,
+        genome="GRCh38",
+    )
+    offline_argv = offline_plan["command_argv"]
+    if (
+        offline_plan["execution"]["offline_bundle_verified"] is not True
+        or offline_plan["execution"]["required_environment"].get("NXF_OFFLINE") != "true"
+        or "-r" in offline_argv
+        or Path(offline_argv[2]).resolve()
+        != (offline_manifest.parent / "pipelines" / "rnaseq" / "workflow").resolve()
+    ):
+        raise SyntheticContractError("offline-mode plan smoke check failed")
+
+    hpc = root / "private" / "hpc"
+    hpc.mkdir(parents=True)
+    settings = hpc / "settings.toml"
+    work_root = root / "work"
+    settings.write_text(
+        "[cluster]\n"
+        'account = "synthetic-account"\n'
+        'partition = "synthetic-partition"\n'
+        'job_name = "synthetic-rnaseq"\n'
+        "launcher_cpus = 1\n"
+        "launcher_memory_gb = 2\n"
+        'launcher_time = "00:30:00"\n'
+        "max_task_cpus = 2\n"
+        "max_task_memory_gb = 4\n"
+        "max_task_time_hours = 1\n"
+        "queue_size = 2\n"
+        "per_cpu_memory = false\n"
+        "[paths]\n"
+        f'work_root = "{work_root.resolve()}"\n'
+        f'container_cache = "{(root / "cache" / "containers").resolve()}"\n'
+        "[software]\n"
+        "purge_modules = false\n"
+        'modules = ["nextflow", "apptainer"]\n',
+        encoding="utf-8",
+    )
+    nextflow_config = hpc / "nextflow.config"
+    write_nextflow_config(settings, nextflow_config)
+    slurm_plan_path = root / "private" / "plans" / "slurm-primary.json"
+    slurm_work = work_root / "slurm-primary"
+    slurm_plan = create_rnaseq_plan(
+        samplesheet=samplesheet,
+        design=design,
+        contrasts=contrasts,
+        workflow_lock=workflow_lock,
+        output=slurm_plan_path,
+        outdir=root / "results" / "slurm-plan-only",
+        workdir=slurm_work,
+        network_mode="direct",
+        container_engine="apptainer",
+        executor="slurm",
+        infrastructure_config=nextflow_config,
+        input_manifest=input_manifest,
+        genome="GRCh38",
+    )
+    launcher = root / "private" / "launch" / "first" / "controller.sbatch"
+    prepared = prepare_launcher(run_plan=slurm_plan_path, settings_path=settings, output=launcher)
+    slurm_work.mkdir(parents=True)
+    previous_receipt = root / "private" / "launch" / "first" / "submission.json"
+    previous_receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "submission_failed",
+                "launcher": str(launcher.resolve()),
+                "launcher_sha256": sha256_file(launcher),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    restart_launcher = root / "private" / "launch" / "restart" / "controller.sbatch"
+    restart = prepare_safe_restart(
+        run_plan=slurm_plan_path,
+        settings_path=settings,
+        previous_receipt=previous_receipt,
+        output=restart_launcher,
+    )
+    if (
+        restart["restart_prepared"] is not True
+        or restart["submitted"] is not False
+        or Path(str(restart["workdir_reused"])) != slurm_work.resolve()
+        or "-resume" not in slurm_plan["command_argv"]
+        or sha256_file(restart_launcher) != restart["launcher_sha256"]
+    ):
+        raise SyntheticContractError("restart/resume smoke check failed")
+
+    return {
+        "scientific_execution_performed": False,
+        "direct_plan_verified": True,
+        "offline_plan_verified": True,
+        "offline_network_disabled": True,
+        "offline_bundle_artifact_count": offline_verification["artifact_count"],
+        "offline_bundle_is_synthetic_not_runnable": True,
+        "slurm_launcher_prepared": prepared["prepared"],
+        "restart_launcher_prepared": restart["restart_prepared"],
+        "restart_submitted": restart["submitted"],
+        "plans": {
+            "offline": {
+                "path": str(offline_plan_path),
+                "sha256": sha256_file(offline_plan_path),
+            },
+            "slurm": {
+                "path": str(slurm_plan_path),
+                "sha256": sha256_file(slurm_plan_path),
+            },
+        },
+    }
+
+
 def run_contract_validation(
     *,
     output_dir: Path,
@@ -375,6 +551,17 @@ def run_contract_validation(
         direction = _verify_direction(differential_completion)
         _advance(progress, "differential_completion")
 
+        execution_modes = _validate_execution_modes(
+            root=root,
+            workflow_lock=workflow_lock,
+            samplesheet=samplesheet,
+            design=design,
+            contrasts=contrasts,
+            input_manifest=input_manifest,
+            direct_plan=primary_plan,
+        )
+        _advance(progress, "execution_modes")
+
         stage_paths = {
             "input_manifest": input_manifest,
             "primary_plan": primary_plan_path,
@@ -395,6 +582,7 @@ def run_contract_validation(
             "n_contrasts": 1,
             "automatic_exclusions": acceptance["automatic_exclusions"],
             "direction_validation": direction,
+            "execution_modes": execution_modes,
             "artifacts": {
                 name: {
                     "path": str(path),
@@ -415,4 +603,3 @@ def run_contract_validation(
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
         raise
-
