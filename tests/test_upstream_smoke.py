@@ -26,6 +26,13 @@ def _file(path: Path, content: str = "evidence\n") -> None:
 
 def _complete_fixture(plan: dict[str, object]) -> None:
     run_root = Path(str(plan["execution"]["run_root"]))
+    _file(
+        run_root / "runtime" / "versions.tsv",
+        "tool\tversion\n"
+        f"nextflow\t{plan['runtime']['nextflow_version']}\n"
+        f"container_engine\t{plan['execution']['container_engine']}\n"
+        "container_runtime\tapptainer version 1.4.5\n",
+    )
     trace = (
         "task_id\tname\tstatus\trealtime\t%cpu\tpeak_rss\tduration\n"
         "1\tTASK\tCOMPLETED\t1s\t100%\t1 MB\t1s\n"
@@ -193,7 +200,7 @@ def test_prepare_renders_non_submitting_heartbeat_launcher(tmp_path: Path) -> No
         wall_time="04:00:00",
         cpus=8,
         memory_gb=32,
-        modules=["StdEnv/2023", "nextflow/26.04.6", "apptainer/1.3.5"],
+        modules=["StdEnv/2023", "nextflow/26.04.4", "apptainer/1.3.5"],
     )
 
     text = launcher.read_text(encoding="utf-8")
@@ -202,6 +209,8 @@ def test_prepare_renders_non_submitting_heartbeat_launcher(tmp_path: Path) -> No
     assert result["heartbeat_seconds"] == 60
     assert "#SBATCH --account=def-project" in text
     assert "stage=${ordinal}/2" in text
+    assert "Nextflow version mismatch" in text
+    assert "runtime/versions.tsv" in text
     assert "test,apptainer" in text
     assert "test_rnaseq_deseq2_gsea,apptainer" in text
     assert text.count("run_stage ") == 2
@@ -361,6 +370,28 @@ def test_completion_rejects_nonterminal_trace_and_missing_science(tmp_path: Path
     )
     gsea.unlink()
     with pytest.raises(UpstreamSmokeError, match="GSEA report"):
+        inspect_upstream_smoke_completion(plan_path)
+
+
+def test_completion_rejects_runtime_version_mismatch(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    plan = create_upstream_smoke_plan(
+        workflow_lock=ROOT / "config" / "workflows.toml",
+        output=plan_path,
+        run_root=tmp_path / "runs",
+        network_mode="direct",
+    )
+    _complete_fixture(plan)
+    runtime = Path(str(plan["execution"]["run_root"])) / "runtime" / "versions.tsv"
+    runtime.write_text(
+        "tool\tversion\n"
+        "nextflow\t26.04.6\n"
+        "container_engine\tapptainer\n"
+        "container_runtime\tapptainer version 1.4.5\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UpstreamSmokeError, match="Nextflow version"):
         inspect_upstream_smoke_completion(plan_path)
 
 

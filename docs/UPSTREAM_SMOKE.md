@@ -60,6 +60,29 @@ nextflow -version
 apptainer --version
 ```
 
+If the cluster module is older than the lock, do not silently substitute it.
+Install the exact official Nextflow release in a private executable directory,
+then load only the container module in the generated launcher:
+
+```bash
+export REPO="$PWD"
+mkdir -p "$HOME/.local/bin" "$HOME/.nextflow"
+cd "$HOME/.local/bin"
+export NXF_VER="$(python -c \
+  'import sys,tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["runtime"]["nextflow_version"])' \
+  "$REPO/config/workflows.toml")"
+curl -fsSL https://get.nextflow.io | bash
+chmod 700 nextflow
+export PATH="$HOME/.local/bin:$PATH"
+nextflow -version
+```
+
+The launcher checks the observed Nextflow version against the lock before either
+workflow starts. It also records the observed Nextflow and container-runtime
+versions in `runtime/versions.tsv`; the completion receipt verifies and hashes
+that file. When using a private Nextflow executable, omit the Nextflow module
+from `prepare` and keep the Apptainer module.
+
 If the site requires an outbound proxy, configure it in the submission shell.
 The framework records only which proxy environment-variable names are present;
 it never records their values. Use `proxy` rather than `direct` in the planning
@@ -174,4 +197,3 @@ contracts:
 - [`nf-core/rnaseq` 3.26.0 test configuration](https://github.com/nf-core/rnaseq/blob/3.26.0/conf/test.config)
 - [`nf-core/rnaseq` 3.26.0 default test snapshot](https://github.com/nf-core/rnaseq/blob/3.26.0/tests/default.nf.test.snap)
 - [`nf-core/differentialabundance` 2.0.0 RNA-seq DESeq2 snapshot](https://github.com/nf-core/differentialabundance/blob/2.0.0/tests/test_rnaseq_deseq2.nf.test.snap)
-

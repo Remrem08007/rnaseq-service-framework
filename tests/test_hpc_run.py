@@ -74,7 +74,7 @@ work_root = "{tmp_path / 'shared-work'}"
 container_cache = "{tmp_path / 'containers'}"
 [software]
 purge_modules = true
-modules = ["nextflow/26.04.6", "apptainer/1.3.5"]
+modules = ["nextflow/26.04.4", "apptainer/1.3.5"]
 """,
         encoding="utf-8",
     )
@@ -117,7 +117,7 @@ def test_prepare_launcher_verifies_plan_and_renders_resume(tmp_path: Path) -> No
     assert result["resumable"] is True
     assert "#SBATCH --account=project-123" in rendered
     assert "#SBATCH --partition=compute" in rendered
-    assert "module load nextflow/26.04.6" in rendered
+    assert "module load nextflow/26.04.4" in rendered
     assert "nextflow run" in rendered
     assert "-resume" in rendered
     assert stat.S_IMODE(launcher.stat().st_mode) == 0o700

@@ -11,7 +11,7 @@ nodes only receive and verify that sealed bundle.
 
 - `nf-core/rnaseq` 3.26.0;
 - `nf-core/differentialabundance` 2.0.0;
-- Nextflow 26.04.6;
+- Nextflow 26.04.4;
 - nf-core/tools 4.1.0.
 
 The staging runner checks both installed tool versions before downloading. A
@@ -20,7 +20,7 @@ workflow or tool update requires a reviewed lock change and new bundle.
 ## 1. Install the staging tools
 
 Use a networked login or transfer node where institutional policy permits
-downloads. Java 17 or newer, Apptainer (or Singularity), Nextflow 26.04.6, and
+downloads. Java 17 or newer, Apptainer (or Singularity), Nextflow 26.04.4, and
 nf-core/tools 4.1.0 must be available.
 
 ```bash
@@ -33,7 +33,7 @@ nf-core --version
 apptainer --version
 ```
 
-Install the official `nextflow-26.04.6-dist` standalone executable when the
+Install the official `nextflow-26.04.4-dist` standalone executable when the
 target environment cannot bootstrap Nextflow from the internet.
 
 ## 2. Create a non-executing staging plan

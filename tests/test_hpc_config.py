@@ -36,7 +36,7 @@ reference_cache = "{tmp_path / 'references'}"
 
 [software]
 purge_modules = true
-modules = ["StdEnv/2023", "nextflow/26.04.6", "apptainer/1.3.5"]
+modules = ["StdEnv/2023", "nextflow/26.04.4", "apptainer/1.3.5"]
 """,
         encoding="utf-8",
     )
