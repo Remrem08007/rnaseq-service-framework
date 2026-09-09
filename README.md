@@ -148,8 +148,14 @@ contract validator drives those inputs through every service gate, checks the
 known fold-change directions, verifies direct/offline planning and safe
 restart/resume controls, and writes a checksum-bound receipt. Synthetic
 upstream-shaped artifacts are clearly labeled: this validates the wrapper but
-does not claim that STAR, Salmon, or DESeq2 ran. See
-[`docs/SYNTHETIC_VALIDATION.md`](docs/SYNTHETIC_VALIDATION.md).
+does not claim that STAR, Salmon, or DESeq2 ran.
+
+The separate real-upstream smoke path plans and launches the official public
+test profiles for both pinned workflows on SLURM, emits one-minute heartbeats,
+and requires successful traces plus MultiQC, Salmon, DESeq2, volcano, report,
+and GSEA artifacts before writing an immutable checksum receipt. No client data
+is used. See [`docs/SYNTHETIC_VALIDATION.md`](docs/SYNTHETIC_VALIDATION.md) and
+[`docs/UPSTREAM_SMOKE.md`](docs/UPSTREAM_SMOKE.md).
 
 ## Documentation
 
@@ -173,6 +179,8 @@ does not claim that STAR, Salmon, or DESeq2 ran. See
 - [`docs/SYNTHETIC_VALIDATION.md`](docs/SYNTHETIC_VALIDATION.md) — deterministic
   non-client fixtures, complete wrapper validation, execution-mode smoke tests,
   and the boundary before real upstream testing;
+- [`docs/UPSTREAM_SMOKE.md`](docs/UPSTREAM_SMOKE.md) — pinned official public
+  test profiles, observable SLURM execution, monitoring, and completion evidence;
 - [`ROADMAP.md`](ROADMAP.md) — M0–M8 implementation plan.
 
 ## Data and privacy policy
