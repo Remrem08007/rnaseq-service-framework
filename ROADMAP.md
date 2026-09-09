@@ -83,7 +83,10 @@ repository invented the underlying RNA-seq methods.
 - complete: deterministic paired-end fixture with known expression differences;
 - complete: all wrapper gates and expected-direction/output-contract assertions;
 - complete: direct, sealed-offline, SLURM, and restart/resume control smoke tests;
-- pending: run the real pinned upstream test profiles on non-client infrastructure.
+- complete: immutable plan, heartbeat SLURM launcher, and completion-evidence gate
+  for the real pinned upstream public-data test profiles;
+- pending: execute that prepared smoke job on non-client infrastructure and seal
+  its successful receipt.
 
 ### M8 — Client handoff and portfolio release
 
