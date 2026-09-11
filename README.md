@@ -24,7 +24,7 @@ The current lock records:
 Versions are pinned in [`config/workflows.toml`](config/workflows.toml) and are
 changed only through a reviewed, retested update.
 
-The same lock pins Nextflow 26.04.4 and nf-core/tools 4.1.0 for deterministic
+The same lock pins Nextflow 25.10.2 and nf-core/tools 4.1.0 for deterministic
 staging behavior.
 
 ## M0 preflight
