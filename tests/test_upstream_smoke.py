@@ -334,7 +334,7 @@ def test_prepare_renders_non_submitting_heartbeat_launcher(tmp_path: Path) -> No
         wall_time="04:00:00",
         cpus=8,
         memory_gb=32,
-        modules=["StdEnv/2023", "nextflow/26.04.4", "apptainer/1.3.5"],
+        modules=["StdEnv/2023", "nextflow/25.10.2", "apptainer/1.3.5"],
     )
 
     text = launcher.read_text(encoding="utf-8")
@@ -383,7 +383,7 @@ def test_offline_launcher_executes_without_calling_curl(
     _executable(
         binaries / "nextflow",
         "#!/usr/bin/env bash\n"
-        "if [[ ${1:-} == -version ]]; then echo 'nextflow version 26.04.4'; fi\n"
+        "if [[ ${1:-} == -version ]]; then echo 'nextflow version 25.10.2'; fi\n"
         "exit 0\n",
     )
     _executable(binaries / "apptainer", "#!/usr/bin/env bash\necho 'apptainer version 1.4.5'\n")
@@ -432,7 +432,7 @@ def test_auto_launcher_falls_back_to_working_proxy(
     _executable(
         binaries / "nextflow",
         "#!/usr/bin/env bash\n"
-        "if [[ ${1:-} == -version ]]; then echo 'nextflow version 26.04.4'; fi\n"
+        "if [[ ${1:-} == -version ]]; then echo 'nextflow version 25.10.2'; fi\n"
         "exit 0\n",
     )
     _executable(binaries / "apptainer", "#!/usr/bin/env bash\necho 'apptainer version 1.4.5'\n")

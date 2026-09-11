@@ -115,7 +115,7 @@ def test_environment_check_verifies_versions_and_endpoints(
     monkeypatch.setattr("rnaseq_service.staging.shutil.which", lambda *args, **kwargs: "/bin/tool")
     monkeypatch.setattr(
         "rnaseq_service.staging.subprocess.check_output",
-        lambda argv, **kwargs: "nf-core 4.1.0" if argv[0] == "nf-core" else "Nextflow 26.04.4",
+        lambda argv, **kwargs: "nf-core 4.1.0" if argv[0] == "nf-core" else "Nextflow 25.10.2",
     )
     monkeypatch.setattr(
         "rnaseq_service.staging.urllib.request.urlopen",

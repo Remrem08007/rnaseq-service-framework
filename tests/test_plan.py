@@ -105,7 +105,7 @@ def test_repository_workflow_lock_is_exact() -> None:
     assert lock.rnaseq.revision == "3.26.0"
     assert lock.differential.name == "nf-core/differentialabundance"
     assert lock.differential.revision == "2.0.0"
-    assert lock.runtime.nextflow_version == "26.04.4"
+    assert lock.runtime.nextflow_version == "25.10.2"
     assert lock.runtime.nf_core_tools_version == "4.1.0"
 
 
@@ -118,7 +118,7 @@ rnaseq_revision = "latest"
 differential_name = "nf-core/differentialabundance"
 differential_revision = "2.0.0"
 [runtime]
-nextflow_version = "26.04.4"
+nextflow_version = "25.10.2"
 nf_core_tools_version = "4.1.0"
 [policy]
 versions_are_pinned = true
