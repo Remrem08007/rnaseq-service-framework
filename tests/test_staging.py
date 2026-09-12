@@ -8,6 +8,7 @@ import pytest
 
 from rnaseq_service.staging import (
     StagingError,
+    _discover_workflow_dir,
     _redact,
     check_staging_environment,
     create_staging_plan,
@@ -95,6 +96,38 @@ def test_redaction_removes_every_proxy_value() -> None:
     rendered = _redact(output, ["http://user:pw@proxy.invalid:8080"])
 
     assert rendered == "connecting through <redacted-proxy>\n"
+
+
+def test_workflow_discovery_ignores_nested_workflow_fixtures(tmp_path: Path) -> None:
+    output_root = tmp_path / "rnaseq-3.26.0"
+    workflow = output_root / "3_26_0"
+    nested = workflow / "tests" / "fixture"
+    for directory in (workflow, nested):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "main.nf").write_text("workflow {}\n", encoding="utf-8")
+        (directory / "nextflow.config").write_text("params {}\n", encoding="utf-8")
+
+    assert _discover_workflow_dir(output_root) == workflow.resolve()
+
+
+def test_workflow_discovery_rejects_ambiguous_top_level_roots(tmp_path: Path) -> None:
+    output_root = tmp_path / "download"
+    for name in ("first", "second"):
+        directory = output_root / name
+        directory.mkdir(parents=True)
+        (directory / "main.nf").write_text("workflow {}\n", encoding="utf-8")
+        (directory / "nextflow.config").write_text("params {}\n", encoding="utf-8")
+
+    with pytest.raises(StagingError, match="top-level downloaded workflow.*found 2"):
+        _discover_workflow_dir(output_root)
+
+
+def test_workflow_discovery_rejects_missing_root(tmp_path: Path) -> None:
+    output_root = tmp_path / "empty"
+    output_root.mkdir()
+
+    with pytest.raises(StagingError, match="no downloaded workflow"):
+        _discover_workflow_dir(output_root)
 
 
 def test_environment_check_verifies_versions_and_endpoints(

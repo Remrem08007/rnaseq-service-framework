@@ -325,6 +325,35 @@ def _stream_command(
     return process.wait(), time.monotonic() - started
 
 
+def _discover_workflow_dir(output_root: Path) -> Path:
+    """Return the unique shallowest downloaded Nextflow workflow directory."""
+
+    candidates = sorted(
+        path.parent
+        for path in output_root.rglob("main.nf")
+        if (path.parent / "nextflow.config").is_file()
+    )
+    if not candidates:
+        raise StagingError(f"no downloaded workflow found under {output_root}")
+
+    depths = {
+        candidate: len(candidate.relative_to(output_root).parts)
+        for candidate in candidates
+    }
+    shallowest_depth = min(depths.values())
+    shallowest = [
+        candidate
+        for candidate, depth in depths.items()
+        if depth == shallowest_depth
+    ]
+    if len(shallowest) != 1:
+        raise StagingError(
+            f"expected one top-level downloaded workflow under {output_root}, "
+            f"found {len(shallowest)} at depth {shallowest_depth}"
+        )
+    return shallowest[0].resolve()
+
+
 def run_staging_plan(
     plan_path: Path,
     *,
@@ -451,17 +480,9 @@ def run_staging_plan(
                     f"workflow staging failed for {argv[3]} with exit {returncode}"
                 )
             output_root = Path(str(commands[index - 1]["output_root"]))
-            candidates = sorted(
-                path.parent
-                for path in output_root.rglob("main.nf")
-                if (path.parent / "nextflow.config").is_file()
+            receipt["steps"][-1]["workflow_dir"] = str(
+                _discover_workflow_dir(output_root)
             )
-            if len(candidates) != 1:
-                raise StagingError(
-                    f"expected one downloaded workflow under {output_root}, "
-                    f"found {len(candidates)}"
-                )
-            receipt["steps"][-1]["workflow_dir"] = str(candidates[0].resolve())
         receipt["status"] = "complete"
     except Exception:
         receipt["status"] = "failed"
