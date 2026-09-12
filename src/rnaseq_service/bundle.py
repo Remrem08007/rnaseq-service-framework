@@ -63,13 +63,28 @@ def _sha256(
     return digest.hexdigest()
 
 
-def _bundle_files(root: Path, manifest: Path) -> list[Path]:
+def _bundle_files(root: Path, manifest: Path, container_root: Path | None = None,
+                  aliases: dict[str, str] | None = None) -> list[Path]:
     files: list[Path] = []
     for path in sorted(root.rglob("*")):
         if path == manifest:
             continue
         if path.is_symlink():
-            raise BundleError(f"symbolic links are not allowed in bundles: {path}")
+            target = os.readlink(path)
+            if (container_root is None or not path.is_relative_to(container_root)
+                    or Path(target).is_absolute() or ".." in Path(target).parts):
+                raise BundleError(f"symbolic links are not allowed in bundles: {path}")
+            try:
+                resolved = path.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise BundleError(f"broken or looping container alias: {path}") from exc
+            if (not resolved.is_relative_to(container_root) or not resolved.is_file()
+                    or path.suffix.lower() not in {".img", ".sif"}
+                    or resolved.suffix.lower() not in {".img", ".sif"}):
+                raise BundleError(f"unsafe container alias: {path}")
+            if aliases is not None:
+                aliases[path.relative_to(root).as_posix()] = target
+            continue
         if path.is_file():
             files.append(path)
     if not files:
@@ -162,7 +177,8 @@ def seal_bundle(
     except WorkflowLockError as exc:
         raise BundleError(str(exc)) from exc
 
-    files = _bundle_files(root, manifest_path)
+    aliases: dict[str, str] = {}
+    files = _bundle_files(root, manifest_path, root / components["container_root"], aliases)
     total_bytes = sum(path.stat().st_size for path in files)
     offset = 0
     records: list[dict[str, object]] = []
@@ -183,7 +199,8 @@ def seal_bundle(
         offset += size
 
     payload: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "container_aliases": aliases,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "bundle_status": "sealed",
         "workflows": {
@@ -228,7 +245,7 @@ def verify_bundle(
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise BundleError(f"could not read bundle manifest: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+    if not isinstance(payload, dict) or payload.get("schema_version") not in {1, 2}:
         raise BundleError("unsupported bundle manifest schema")
     if payload.get("bundle_status") != "sealed":
         raise BundleError("bundle manifest is not sealed")
@@ -249,10 +266,19 @@ def verify_bundle(
             raise BundleError(f"duplicate or reserved artifact path: {relative}")
         records[relative] = record
 
+    components = payload.get("components")
+    if not isinstance(components, dict):
+        raise BundleError("bundle components are missing")
+    container_relative = _safe_relative(components.get("container_root"))
+    aliases: dict[str, str] = {}
     actual_files = {
         path.relative_to(root).as_posix()
-        for path in _bundle_files(root, manifest_path)
+        for path in _bundle_files(root, manifest_path,
+                                 root / container_relative if payload["schema_version"] == 2 else None,
+                                 aliases)
     }
+    if payload["schema_version"] == 2 and aliases != payload.get("container_aliases"):
+        raise BundleError("container aliases changed")
     expected_files = set(records)
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)

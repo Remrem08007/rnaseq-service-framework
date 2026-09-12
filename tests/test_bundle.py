@@ -12,6 +12,44 @@ from rnaseq_service.bundle import BundleError, seal_bundle, verify_bundle
 ROOT = Path(__file__).parents[1]
 
 
+def test_container_aliases_are_portable_and_bound(tmp_path: Path) -> None:
+    import shutil
+
+    root, components = make_bundle(tmp_path)
+    alias = components["container_root"] / "quay-tool.img"
+    alias.symlink_to("tool.sif")
+    payload = seal_bundle(bundle_dir=root, workflow_lock=ROOT / "config/workflows.toml",
+                          **components)
+    assert payload["container_aliases"] == {"containers/quay-tool.img": "tool.sif"}
+    assert payload["artifact_count"] == 6
+    moved = tmp_path / "moved"
+    shutil.copytree(root, moved, symlinks=True)
+    assert verify_bundle(moved / "offline_bundle.manifest.json")["verified"]
+    alias.unlink()
+    alias.symlink_to("./tool.sif")
+    with pytest.raises(BundleError, match="aliases changed"):
+        verify_bundle(root / "offline_bundle.manifest.json")
+
+
+@pytest.mark.parametrize("target", ["missing.img", "loop.img", "/tmp/outside.img",
+                                    "../plugins/plugin.img", "."])
+def test_unsafe_container_aliases_rejected(tmp_path: Path, target: str) -> None:
+    root, components = make_bundle(tmp_path)
+    (components["container_root"] / "loop.img").symlink_to(target)
+    with pytest.raises(BundleError):
+        seal_bundle(bundle_dir=root, workflow_lock=ROOT / "config/workflows.toml",
+                    **components)
+    assert not (root / "offline_bundle.manifest.json").exists()
+
+
+def test_legacy_manifest_still_verifies(tmp_path: Path) -> None:
+    manifest, payload = seal(tmp_path)
+    payload["schema_version"] = 1
+    del payload["container_aliases"]
+    manifest.write_text(json.dumps(payload))
+    assert verify_bundle(manifest)["verified"]
+
+
 def make_bundle(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
     root = tmp_path / "offline"
     rnaseq = root / "pipelines" / "rnaseq" / "workflow"

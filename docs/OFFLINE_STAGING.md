@@ -153,7 +153,14 @@ rnaseq-service-bundle seal \
 ```
 
 Sealing shows byte-level progress while hashing large images and writes
-`offline_bundle.manifest.json` with mode `0600`. It refuses symbolic links,
+`offline_bundle.manifest.json` with mode `0600`. Schema 2 records relative
+container-image aliases separately and hashes their regular target files once.
+Aliases must remain within the container cache; absolute links, parent traversal,
+broken links, loops, directory links, and links outside the container component
+are rejected. Verification checks exact alias membership and target text as well
+as target-file checksums. Existing schema-1 bundles remain supported without
+symlinks. Preserve symlinks when transferring a schema-2 bundle.
+Sealing also refuses
 missing workflow entry points, an empty image cache, or an existing manifest.
 The manifest declares that staging artifacts contain neither client data nor
 secrets. Omit `--upstream-test-data-root` for a production-only software bundle;
