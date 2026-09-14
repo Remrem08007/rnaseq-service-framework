@@ -65,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--cpus", type=int, default=8)
     prepare.add_argument("--memory-gb", type=int, default=32)
     prepare.add_argument("--module", action="append", dest="modules", required=True)
+    prepare.add_argument("--rnaseq-nextflow-module")
+    prepare.add_argument("--differential-nextflow-module")
     prepare.add_argument("--no-module-purge", action="store_false", dest="purge_modules")
     complete = commands.add_parser(
         "complete", help="validate both upstream runs and seal a completion receipt"
@@ -111,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
                 memory_gb=args.memory_gb,
                 modules=args.modules,
                 purge_modules=args.purge_modules,
+                rnaseq_nextflow_module=args.rnaseq_nextflow_module,
+                differential_nextflow_module=args.differential_nextflow_module,
             )
             summary = result
         else:

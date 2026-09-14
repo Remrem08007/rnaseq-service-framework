@@ -28,10 +28,17 @@ class RuntimeSpec:
 
 
 @dataclass(frozen=True)
+class SmokeRuntimeSpec:
+    rnaseq_nextflow_version: str
+    differential_nextflow_version: str
+
+
+@dataclass(frozen=True)
 class WorkflowLock:
     rnaseq: WorkflowSpec
     differential: WorkflowSpec
     runtime: RuntimeSpec
+    smoke_runtime: SmokeRuntimeSpec
     last_reviewed: str
 
 
@@ -67,6 +74,7 @@ def load_workflow_lock(path: Path) -> WorkflowLock:
 
     workflows = payload.get("workflows")
     runtime = payload.get("runtime")
+    smoke_runtime = payload.get("smoke_runtime")
     policy = payload.get("policy")
     if (
         not isinstance(workflows, dict)
@@ -95,9 +103,21 @@ def load_workflow_lock(path: Path) -> WorkflowLock:
     )
     nextflow_version = _require_string(runtime, "nextflow_version", path)
     nf_core_tools_version = _require_string(runtime, "nf_core_tools_version", path)
+    if smoke_runtime is None:
+        smoke_runtime = {}
+    if not isinstance(smoke_runtime, dict):
+        raise WorkflowLockError(f"{path}: [smoke_runtime] must be a table")
+    rnaseq_nextflow_version = str(
+        smoke_runtime.get("rnaseq_nextflow_version", nextflow_version)
+    ).strip()
+    differential_nextflow_version = str(
+        smoke_runtime.get("differential_nextflow_version", nextflow_version)
+    ).strip()
     for label, version in (
         ("nextflow_version", nextflow_version),
         ("nf_core_tools_version", nf_core_tools_version),
+        ("rnaseq_nextflow_version", rnaseq_nextflow_version),
+        ("differential_nextflow_version", differential_nextflow_version),
     ):
         if not EXACT_REVISION.fullmatch(version):
             raise WorkflowLockError(
@@ -109,6 +129,10 @@ def load_workflow_lock(path: Path) -> WorkflowLock:
         runtime=RuntimeSpec(
             nextflow_version=nextflow_version,
             nf_core_tools_version=nf_core_tools_version,
+        ),
+        smoke_runtime=SmokeRuntimeSpec(
+            rnaseq_nextflow_version=rnaseq_nextflow_version,
+            differential_nextflow_version=differential_nextflow_version,
         ),
         last_reviewed=_require_string(policy, "last_reviewed", path),
     )

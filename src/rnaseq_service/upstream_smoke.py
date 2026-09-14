@@ -208,6 +208,10 @@ def create_upstream_smoke_plan(
         "runtime": {
             "nextflow_version": lock.runtime.nextflow_version,
             "nf_core_tools_version": lock.runtime.nf_core_tools_version,
+            "rnaseq_nextflow_version": lock.smoke_runtime.rnaseq_nextflow_version,
+            "differential_nextflow_version": (
+                lock.smoke_runtime.differential_nextflow_version
+            ),
         },
         "execution": {
             "run_root": str(root),
@@ -293,6 +297,10 @@ def _read_plan(path: Path) -> tuple[Path, dict[str, object]]:
     if plan.get("runtime") != {
         "nextflow_version": workflow_lock.runtime.nextflow_version,
         "nf_core_tools_version": workflow_lock.runtime.nf_core_tools_version,
+        "rnaseq_nextflow_version": workflow_lock.smoke_runtime.rnaseq_nextflow_version,
+        "differential_nextflow_version": (
+            workflow_lock.smoke_runtime.differential_nextflow_version
+        ),
     }:
         raise UpstreamSmokeError("upstream smoke runtime pin changed after planning")
     offline_record = execution.get("offline_bundle")
@@ -597,12 +605,16 @@ def inspect_upstream_smoke_completion(
     except (OSError, UnicodeError, csv.Error) as exc:
         raise UpstreamSmokeError(f"could not read runtime-version evidence: {exc}") from exc
     observed = {row["tool"]: row["version"] for row in runtime_rows}
-    expected_nextflow = str(plan["runtime"]["nextflow_version"])
+    expected_nextflow = {
+        "rnaseq": str(plan["runtime"]["rnaseq_nextflow_version"]),
+        "differential": str(plan["runtime"]["differential_nextflow_version"]),
+    }
     expected_engine = str(plan["execution"]["container_engine"])
-    if observed.get("nextflow") != expected_nextflow:
-        raise UpstreamSmokeError(
-            "observed Nextflow version does not match the workflow lock"
-        )
+    for stage, version in expected_nextflow.items():
+        if observed.get(f"nextflow_{stage}") != version:
+            raise UpstreamSmokeError(
+                f"observed Nextflow version for {stage} does not match the workflow lock"
+            )
     if observed.get("container_engine") != expected_engine:
         raise UpstreamSmokeError("observed container engine does not match the run plan")
     if not observed.get("container_runtime"):
@@ -699,8 +711,10 @@ def inspect_upstream_smoke_completion(
         "workflow_lock": plan["workflow_lock"],
         "runtime": plan["runtime"],
         "runtime_verification": {
-            "expected_nextflow_version": expected_nextflow,
-            "observed_nextflow_version": observed["nextflow"],
+            "expected_nextflow_versions": expected_nextflow,
+            "observed_nextflow_versions": {
+                stage: observed[f"nextflow_{stage}"] for stage in expected_nextflow
+            },
             "container_engine": observed["container_engine"],
             "container_runtime": observed["container_runtime"],
             "artifact": runtime_artifact,
@@ -757,6 +771,8 @@ def create_upstream_smoke_launcher(
     memory_gb: int,
     modules: list[str],
     purge_modules: bool = True,
+    rnaseq_nextflow_module: str | None = None,
+    differential_nextflow_module: str | None = None,
 ) -> dict[str, object]:
     """Render, but never submit, a two-stage SLURM smoke launcher."""
 
@@ -774,6 +790,12 @@ def create_upstream_smoke_launcher(
         raise UpstreamSmokeError("SLURM memory must be a positive integer")
     if not modules or any(MODULE_TOKEN.fullmatch(module) is None for module in modules):
         raise UpstreamSmokeError("module names must be non-empty safe tokens")
+    for label, module in (
+        ("RNA-seq Nextflow", rnaseq_nextflow_module),
+        ("differential Nextflow", differential_nextflow_module),
+    ):
+        if module is not None and MODULE_TOKEN.fullmatch(module) is None:
+            raise UpstreamSmokeError(f"{label} module must be a safe token")
 
     resolved = output.resolve()
     log_dir = resolved.parent / "logs"
@@ -877,13 +899,7 @@ def create_upstream_smoke_launcher(
     lines.extend(
         [
             "",
-            f"expected_nextflow={shlex.quote(str(plan['runtime']['nextflow_version']))}",
             f"container_engine={shlex.quote(str(plan['execution']['container_engine']))}",
-            "actual_nextflow=$(nextflow -version 2>&1 | awk '/version/ && !found {for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\\.[0-9]+\\.[0-9]+(-edge)?$/) {print $i; found=1; break}}')",
-            "if [[ \"$actual_nextflow\" != \"$expected_nextflow\" ]]; then",
-            "    echo \"[upstream-smoke] Nextflow version mismatch: expected=${expected_nextflow} observed=${actual_nextflow:-unavailable}\" >&2",
-            "    exit 64",
-            "fi",
             "if ! command -v \"$container_engine\" >/dev/null 2>&1; then",
             "    echo \"[upstream-smoke] container engine unavailable: ${container_engine}\" >&2",
             "    exit 64",
@@ -894,10 +910,27 @@ def create_upstream_smoke_launcher(
             "    exit 64",
             "fi",
             f"runtime_evidence={shlex.quote(str(run_root / 'runtime' / 'versions.tsv'))}",
-            "printf 'tool\\tversion\\nnextflow\\t%s\\ncontainer_engine\\t%s\\ncontainer_runtime\\t%s\\n' \\",
-            "    \"$actual_nextflow\" \"$container_engine\" \"$container_runtime\" > \"$runtime_evidence\"",
+            "printf 'tool\\tversion\\ncontainer_engine\\t%s\\ncontainer_runtime\\t%s\\n' \\",
+            "    \"$container_engine\" \"$container_runtime\" > \"$runtime_evidence\"",
             "chmod 600 \"$runtime_evidence\"",
-            "echo \"[upstream-smoke] runtime verified nextflow=${actual_nextflow} engine=${container_engine}\" >&2",
+            "",
+            "activate_nextflow() {",
+            "    local stage=\"$1\" expected=\"$2\" nextflow_module=\"$3\"",
+            "    if [[ -n \"$nextflow_module\" ]]; then",
+            "        module unload nextflow >/dev/null 2>&1 || true",
+            "        module load \"$nextflow_module\"",
+            "    fi",
+            f"    export NXF_OPTS=\"${{NXF_OPTS:-}} -XX:ActiveProcessorCount=${{SLURM_CPUS_PER_TASK:-{cpus}}}\"",
+            "    export RNASEQ_SERVICE_NEXTFLOW_STAGE=\"$stage\"",
+            "    local actual_nextflow",
+            "    actual_nextflow=$(nextflow -version 2>&1 | awk '/version/ && !found {for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\\.[0-9]+\\.[0-9]+(-edge)?$/) {print $i; found=1; break}}')",
+            "    if [[ \"$actual_nextflow\" != \"$expected\" ]]; then",
+            "        echo \"[upstream-smoke] Nextflow version mismatch for ${stage}: expected=${expected} observed=${actual_nextflow:-unavailable}\" >&2",
+            "        exit 64",
+            "    fi",
+            "    printf 'nextflow_%s\\t%s\\n' \"$stage\" \"$actual_nextflow\" >> \"$runtime_evidence\"",
+            "    echo \"[upstream-smoke] runtime verified stage=${stage} nextflow=${actual_nextflow} engine=${container_engine}\" >&2",
+            "}",
             "",
             "run_stage() {",
             "    local label=\"$1\"",
@@ -930,9 +963,20 @@ def create_upstream_smoke_launcher(
             "",
         ]
     )
+    stage_modules = {
+        "rnaseq": rnaseq_nextflow_module or "",
+        "differential": differential_nextflow_module or "",
+    }
     for ordinal, stage in enumerate(plan["stages"], start=1):
+        stage_id = str(stage["id"])
+        expected = str(plan["runtime"][f"{stage_id}_nextflow_version"])
         lines.append(
-            f"run_stage {shlex.quote(str(stage['id']))} {ordinal} "
+            "activate_nextflow "
+            f"{shlex.quote(stage_id)} {shlex.quote(expected)} "
+            f"{shlex.quote(stage_modules[stage_id])}"
+        )
+        lines.append(
+            f"run_stage {shlex.quote(stage_id)} {ordinal} "
             + shlex.join(stage["command_argv"])
         )
     lines.extend(["", "echo '[upstream-smoke] COMPLETE' >&2", ""])

@@ -10,6 +10,12 @@ differential_revision = "2.0.0"
 nextflow_version = "25.10.2"
 nf_core_tools_version = "4.1.0"
 
+[smoke_runtime]
+# rnaseq 3.26.0 configuration parsing is incompatible with Nextflow 26.04.4,
+# while differentialabundance 2.0.0 requires Nextflow >=25.10.4.
+rnaseq_nextflow_version = "25.10.2"
+differential_nextflow_version = "26.04.4"
+
 [policy]
 versions_are_pinned = true
 allow_development_revisions = false
