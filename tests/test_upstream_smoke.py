@@ -383,7 +383,9 @@ def test_offline_launcher_executes_without_calling_curl(
     _executable(
         binaries / "nextflow",
         "#!/usr/bin/env bash\n"
-        "if [[ ${1:-} == -version ]]; then echo 'nextflow version 25.10.2'; fi\n"
+        "if [[ ${1:-} == -version ]]; then echo 'nextflow version 25.10.2'; exit 0; fi\n"
+        "mkdir -p .nextflow/cache\n"
+        "touch .nextflow/history\n"
         "exit 0\n",
     )
     _executable(binaries / "apptainer", "#!/usr/bin/env bash\necho 'apptainer version 1.4.5'\n")
@@ -397,6 +399,8 @@ def test_offline_launcher_executes_without_calling_curl(
     )
     assert result.returncode == 0, result.stderr
     assert not marker.exists()
+    assert (tmp_path / "runs/runtime/launch-data/.nextflow/history").is_file()
+    assert not (manifest.parent / "upstream-test-data/.nextflow").exists()
     evidence = (
         Path(str(plan["execution"]["run_root"]))
         / "runtime"

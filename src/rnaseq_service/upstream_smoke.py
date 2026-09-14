@@ -813,7 +813,15 @@ def create_upstream_smoke_launcher(
     if offline is not None:
         for name, value in plan["execution"]["required_environment"].items():
             lines.append(f"export {name}={shlex.quote(str(value))}")
-        lines.append(f"cd {shlex.quote(str(offline['test_data_root']))}")
+        # Relative samplesheet paths need the test-data layout, but Nextflow
+        # writes .nextflow state in its launch directory. Keep the seal intact.
+        launch_data = run_root / "runtime" / "launch-data"
+        lines.extend([
+            f"if [[ ! -d {shlex.quote(str(launch_data))} ]]; then",
+            f"    cp -a {shlex.quote(str(offline['test_data_root']))} {shlex.quote(str(launch_data))}",
+            "fi",
+            f"cd {shlex.quote(str(launch_data))}",
+        ])
     else:
         direct_unsets = " ".join(
             f"-u {name}"
