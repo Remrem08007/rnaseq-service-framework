@@ -157,6 +157,17 @@ def _check_params(
         raise PrimaryDeliveryError("pipeline params.json 'genome' does not match the run plan")
 
 
+def _pipeline_params_path(pipeline_info: Path) -> Path:
+    """Return the newest nf-core parameter record, with legacy-name support."""
+
+    timestamped = sorted(
+        path for path in pipeline_info.glob("params_*.json") if path.is_file()
+    )
+    if timestamped:
+        return timestamped[-1]
+    return pipeline_info / "params.json"
+
+
 def _hash_file(path: Path, role: str, progress: HashProgress | None) -> str:
     import hashlib
 
@@ -244,7 +255,13 @@ def inspect_primary_completion(
                 directory=False,
             ),
         ),
-        ("pipeline_params", _required_file(rnaseq_root / "pipeline_info" / "params.json", "pipeline parameters")),
+        (
+            "pipeline_params",
+            _required_file(
+                _pipeline_params_path(rnaseq_root / "pipeline_info"),
+                "pipeline parameters",
+            ),
+        ),
         ("validated_samplesheet", _required_file(rnaseq_root / "pipeline_info" / "samplesheet.valid.csv", "validated samplesheet")),
         ("gene_counts", _required_file(rnaseq_root / "star_salmon" / "salmon.merged.gene_counts.tsv", "gene-count matrix")),
         (

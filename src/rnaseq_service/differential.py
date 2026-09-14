@@ -790,6 +790,17 @@ def _check_differential_params(
             raise DifferentialHandoffError(f"pipeline params.json {key!r} conflicts with the plan")
 
 
+def _pipeline_params_path(pipeline_info: Path) -> Path:
+    """Return the newest nf-core parameter record, with legacy-name support."""
+
+    timestamped = sorted(
+        path for path in pipeline_info.glob("params_*.json") if path.is_file()
+    )
+    if timestamped:
+        return timestamped[-1]
+    return pipeline_info / "params.json"
+
+
 def _hash_artifact(
     role: str,
     path: Path,
@@ -861,7 +872,14 @@ def inspect_differential_completion(
         ("nextflow_trace", trace, None),
         ("nextflow_timeline", _required_file(run_root / "execution" / "timeline.html", "Nextflow timeline"), None),
         ("nextflow_dag", _required_file(run_root / "execution" / "dag.html", "Nextflow DAG"), None),
-        ("pipeline_params", _required_file(pipeline_root / "pipeline_info" / "params.json", "pipeline parameters"), None),
+        (
+            "pipeline_params",
+            _required_file(
+                _pipeline_params_path(pipeline_root / "pipeline_info"),
+                "pipeline parameters",
+            ),
+            None,
+        ),
         ("validated_observations", _required_file(pipeline_root / "pipeline_info" / "samplesheet.valid.csv", "validated observations"), None),
         (
             "software_versions",
