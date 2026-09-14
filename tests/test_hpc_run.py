@@ -192,18 +192,14 @@ def test_auto_launcher_executes_verified_offline_bundle_without_network_probe(
         path.write_text(script, encoding="utf-8")
         path.chmod(0o700)
     capture = tmp_path / "nextflow-call.txt"
-    environment = os.environ.copy()
-    # Environment Modules exports Bash functions on HPC login nodes. Remove
-    # them so this test exercises its fake module executable deterministically.
-    for name in list(environment):
-        if name.startswith(("BASH_FUNC_module", "BASH_FUNC_ml")):
-            environment.pop(name)
+    # Use a minimal environment: HPC module systems can reconstruct exported
+    # shell functions from site-specific state even after BASH_FUNC_* is removed.
     curl_called = tmp_path / "curl-called"
-    environment.update(
-        PATH=f"{fake_bin}:{environment['PATH']}",
-        CAPTURE=str(capture),
-        CURL_CALLED=str(curl_called),
-    )
+    environment = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "CAPTURE": str(capture),
+        "CURL_CALLED": str(curl_called),
+    }
 
     subprocess.run(["bash", str(launcher)], env=environment, check=True)
 
