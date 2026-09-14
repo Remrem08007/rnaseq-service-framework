@@ -39,7 +39,8 @@ def _complete_fixture(plan: dict[str, object]) -> None:
     _file(
         run_root / "runtime" / "versions.tsv",
         "tool\tversion\n"
-        f"nextflow\t{plan['runtime']['nextflow_version']}\n"
+        f"nextflow_rnaseq\t{plan['runtime']['rnaseq_nextflow_version']}\n"
+        f"nextflow_differential\t{plan['runtime']['differential_nextflow_version']}\n"
         f"container_engine\t{plan['execution']['container_engine']}\n"
         "container_runtime\tapptainer version 1.4.5\n",
     )
@@ -181,6 +182,8 @@ def test_plan_pins_both_official_public_test_profiles(tmp_path: Path) -> None:
     assert "test,apptainer" in rnaseq["command_argv"]
     assert "test_rnaseq_deseq2_gsea,apptainer" in differential["command_argv"]
     assert all("-resume" in stage["command_argv"] for stage in plan["stages"])
+    assert plan["runtime"]["rnaseq_nextflow_version"] == "25.10.2"
+    assert plan["runtime"]["differential_nextflow_version"] == "26.04.4"
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
 
 
@@ -383,7 +386,7 @@ def test_offline_launcher_executes_without_calling_curl(
     _executable(
         binaries / "nextflow",
         "#!/usr/bin/env bash\n"
-        "if [[ ${1:-} == -version ]]; then echo 'nextflow version 25.10.2'; exit 0; fi\n"
+        "if [[ ${1:-} == -version ]]; then [[ $RNASEQ_SERVICE_NEXTFLOW_STAGE == differential ]] && echo 'nextflow version 26.04.4' || echo 'nextflow version 25.10.2'; exit 0; fi\n"
         "mkdir -p .nextflow/cache\n"
         "touch .nextflow/history\n"
         "exit 0\n",
@@ -436,7 +439,7 @@ def test_auto_launcher_falls_back_to_working_proxy(
     _executable(
         binaries / "nextflow",
         "#!/usr/bin/env bash\n"
-        "if [[ ${1:-} == -version ]]; then echo 'nextflow version 25.10.2'; fi\n"
+        "if [[ ${1:-} == -version ]]; then [[ $RNASEQ_SERVICE_NEXTFLOW_STAGE == differential ]] && echo 'nextflow version 26.04.4' || echo 'nextflow version 25.10.2'; fi\n"
         "exit 0\n",
     )
     _executable(binaries / "apptainer", "#!/usr/bin/env bash\necho 'apptainer version 1.4.5'\n")
@@ -524,9 +527,11 @@ def test_prepare_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
             "--time",
             "04:00:00",
             "--module",
-            "nextflow",
-            "--module",
             "apptainer",
+            "--rnaseq-nextflow-module",
+            "nextflow/25.10.2",
+            "--differential-nextflow-module",
+            "nextflow/26.04.4",
         ]
     ) == 0
     summary = json.loads(capsys.readouterr().out)
@@ -632,7 +637,8 @@ def test_completion_rejects_runtime_version_mismatch(tmp_path: Path) -> None:
     runtime = Path(str(plan["execution"]["run_root"])) / "runtime" / "versions.tsv"
     runtime.write_text(
         "tool\tversion\n"
-        "nextflow\t26.04.6\n"
+        f"nextflow_rnaseq\t{plan['runtime']['rnaseq_nextflow_version']}\n"
+        "nextflow_differential\t26.04.6\n"
         "container_engine\tapptainer\n"
         "container_runtime\tapptainer version 1.4.5\n",
         encoding="utf-8",

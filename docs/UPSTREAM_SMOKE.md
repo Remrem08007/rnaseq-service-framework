@@ -45,8 +45,9 @@ Set the exact values you reviewed. These examples are placeholders:
 ```bash
 export SMOKE_ACCOUNT='replace-with-project-account'
 export SMOKE_PARTITION='replace-with-partition'
-export NEXTFLOW_MODULE='replace-with-nextflow-module/version'
-export APPTAINER_MODULE='replace-with-apptainer-module/version'
+export RNASEQ_NEXTFLOW_MODULE='nextflow/25.10.2'
+export DIFFERENTIAL_NEXTFLOW_MODULE='nextflow/26.04.4'
+export APPTAINER_MODULE='apptainer/1.4.5'
 ```
 
 The selected Nextflow module must provide the version pinned in the workflow
@@ -77,8 +78,9 @@ export PATH="$HOME/.local/bin:$PATH"
 nextflow -version
 ```
 
-The launcher checks the observed Nextflow version against the lock before either
-workflow starts. It also records the observed Nextflow and container-runtime
+The launcher switches modules and checks the stage-specific Nextflow version before each
+workflow starts. It also overrides an inherited JVM `ActiveProcessorCount` using the
+SLURM CPU allocation. It also records the observed Nextflow and container-runtime
 versions in `runtime/versions.tsv`; the completion receipt verifies and hashes
 that file. When using a private Nextflow executable, omit the Nextflow module
 from `prepare` and keep the Apptainer module.
@@ -139,8 +141,9 @@ rnaseq-service-upstream-smoke prepare \
   --time 08:00:00 \
   --cpus 8 \
   --memory-gb 32 \
-  --module "$NEXTFLOW_MODULE" \
-  --module "$APPTAINER_MODULE"
+  --module "$APPTAINER_MODULE" \
+  --rnaseq-nextflow-module "$RNASEQ_NEXTFLOW_MODULE" \
+  --differential-nextflow-module "$DIFFERENTIAL_NEXTFLOW_MODULE"
 
 sed -n '1,240p' "$SMOKE_PRIVATE/launch/smoke.sbatch"
 bash -n "$SMOKE_PRIVATE/launch/smoke.sbatch"
