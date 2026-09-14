@@ -94,7 +94,7 @@ def completed_fixture(tmp_path: Path) -> tuple[Path, Path]:
     (pipeline_info / "nf_core_rnaseq_software_mqc_versions.yml").write_text(
         "STAR: 2.7.11b\n", encoding="utf-8"
     )
-    (pipeline_info / "params.json").write_text(
+    (pipeline_info / "params_2026-09-14_15-42-28.json").write_text(
         json.dumps(
             {
                 "input": str(samplesheet.resolve()),
@@ -238,7 +238,9 @@ def test_gene_lengths_are_required_for_differential_handoff(tmp_path: Path) -> N
 
 def test_pipeline_params_must_match_plan(tmp_path: Path) -> None:
     plan, run_root = completed_fixture(tmp_path)
-    params = run_root / "rnaseq" / "pipeline_info" / "params.json"
+    params = next(
+        (run_root / "rnaseq" / "pipeline_info").glob("params_*.json")
+    )
     params.write_text(
         json.dumps(
             {"input": "/wrong", "outdir": str(run_root / "rnaseq"), "genome": "GRCh38"}

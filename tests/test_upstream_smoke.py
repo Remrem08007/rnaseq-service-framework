@@ -64,7 +64,7 @@ def _complete_fixture(plan: dict[str, object]) -> None:
         for name in ("report.html", "timeline.html", "dag.html"):
             _file(execution / name)
         _file(
-            results / "pipeline_info" / "params.json",
+            results / "pipeline_info" / "params_2026-09-14_17-37-58.json",
             json.dumps({"outdir": str(results.resolve())}),
         )
         version_name = (
@@ -548,6 +548,16 @@ def test_completion_requires_both_successful_scientific_stages(tmp_path: Path) -
         network_mode="direct",
     )
     _complete_fixture(plan)
+    run_root = Path(str(plan["execution"]["run_root"]))
+    for stage_id in ("rnaseq", "differential"):
+        _file(
+            run_root
+            / stage_id
+            / "results"
+            / "pipeline_info"
+            / "params_2026-09-14_15-42-28.json",
+            json.dumps({"outdir": "/stale/run"}),
+        )
     progress: list[tuple[str, int, int]] = []
 
     result = inspect_upstream_smoke_completion(
@@ -571,6 +581,13 @@ def test_completion_requires_both_successful_scientific_stages(tmp_path: Path) -
         "volcano_plot",
         "gsea_report",
     }
+    for stage in result["stages"]:
+        params = next(
+            artifact
+            for artifact in stage["artifacts"]
+            if artifact["role"] == "pipeline_params"
+        )
+        assert params["path"].endswith("params_2026-09-14_17-37-58.json")
     assert progress
 
 

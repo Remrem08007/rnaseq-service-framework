@@ -195,8 +195,9 @@ rnaseq-service-upstream-smoke complete \
 ```
 
 The command shows artifact-by-artifact hashing progress. It refuses completion
-unless both traces contain only successful terminal tasks, both `params.json`
-files point to the planned output directories, and all of the following exist:
+unless both traces contain only successful terminal tasks, both nf-core
+`params_<timestamp>.json` files point to the planned output directories, and
+all of the following exist:
 
 - Nextflow trace, report, timeline, DAG, parameters, and software versions for
   both stages;

@@ -11,7 +11,7 @@ Every new CLI-generated plan must name a reviewed nf-core iGenomes key with
 `--genome`. On HPC, `paths.reference_cache` in the private infrastructure
 settings supplies the shared iGenomes root. The key is stored in the plan,
 passed directly to nf-core, and checked against the completed pipeline's
-`params.json`.
+the nf-core `params_<timestamp>.json` parameter record.
 
 Custom FASTA/GTF and custom prebuilt-index manifests are not accepted by this
 version of the service wrapper. Do not substitute custom paths behind an

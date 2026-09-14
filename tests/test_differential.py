@@ -69,7 +69,7 @@ def completed_differential_fixture(tmp_path: Path) -> tuple[Path, Path]:
         "DESeq2: 1.34.0\n", encoding="utf-8"
     )
     controls = plan["control_files"]
-    (info / "params.json").write_text(
+    (info / "params_2026-09-14_17-37-58.json").write_text(
         json.dumps(
             {
                 "input": controls["observations"]["path"],

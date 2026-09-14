@@ -433,6 +433,17 @@ def _read_params(path: Path, expected_outdir: Path) -> dict[str, object]:
     return payload
 
 
+def _pipeline_params_path(pipeline_info: Path) -> Path:
+    """Return the newest nf-core parameter record, with legacy-name support."""
+
+    timestamped = sorted(
+        path for path in pipeline_info.glob("params_*.json") if path.is_file()
+    )
+    if timestamped:
+        return timestamped[-1]
+    return pipeline_info / "params.json"
+
+
 def _hash_artifact(
     *,
     stage: str,
@@ -485,7 +496,10 @@ def _stage_artifacts(stage_id: str, stage_root: Path) -> list[tuple[str, Path]]:
         ("nextflow_dag", _required_file(execution / "dag.html", "Nextflow DAG")),
         (
             "pipeline_params",
-            _required_file(results / "pipeline_info" / "params.json", "pipeline parameters"),
+            _required_file(
+                _pipeline_params_path(results / "pipeline_info"),
+                "pipeline parameters",
+            ),
         ),
         (
             "software_versions",
